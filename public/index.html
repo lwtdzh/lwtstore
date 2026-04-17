@@ -52,7 +52,12 @@
 
     <!-- File List Section -->
     <section class="file-list-section">
-      <h2>已上传的文件</h2>
+      <div class="file-list-header">
+        <h2>已上传的文件</h2>
+        <div class="search-box">
+          <input type="text" id="searchInput" placeholder="搜索文件名..." autocomplete="off">
+        </div>
+      </div>
       <div class="file-list" id="fileList">
         <div class="loading" id="fileListLoading">加载中...</div>
         <div class="empty-state" id="emptyState" style="display: none;">
@@ -70,11 +75,28 @@
           <tbody id="fileTableBody">
           </tbody>
         </table>
+        <!-- Pagination -->
+        <div class="pagination" id="pagination" style="display: none;">
+          <div class="pagination-info">
+            <span id="paginationInfo"></span>
+            <select id="pageSizeSelect">
+              <option value="10">10 条/页</option>
+              <option value="20" selected>20 条/页</option>
+              <option value="50">50 条/页</option>
+              <option value="100">100 条/页</option>
+            </select>
+          </div>
+          <div class="pagination-controls">
+            <button class="btn btn-page" id="prevPageBtn" disabled>上一页</button>
+            <span class="page-numbers" id="pageNumbers"></span>
+            <button class="btn btn-page" id="nextPageBtn" disabled>下一页</button>
+          </div>
+        </div>
       </div>
     </section>
 
     <footer>
-      <p>Powered by Cloudflare Pages & GitHub</p>
+      <p>Powered by Cloudflare Pages & GitHub · <a href="/admin.html" class="admin-link">管理</a></p>
     </footer>
   </div>
 

@@ -23,8 +23,22 @@ const emptyState = document.getElementById("emptyState");
 const fileTable = document.getElementById("fileTable");
 const fileTableBody = document.getElementById("fileTableBody");
 
+const searchInput = document.getElementById("searchInput");
+const pagination = document.getElementById("pagination");
+const paginationInfo = document.getElementById("paginationInfo");
+const pageSizeSelect = document.getElementById("pageSizeSelect");
+const prevPageBtn = document.getElementById("prevPageBtn");
+const nextPageBtn = document.getElementById("nextPageBtn");
+const pageNumbers = document.getElementById("pageNumbers");
+
 let currentUpload = null; // Track current upload state
 let uploadCancelled = false;
+
+// Pagination state
+let currentPage = 1;
+let currentPageSize = 20;
+let currentSearch = "";
+let searchDebounceTimer = null;
 
 // ==================== Initialization ====================
 
@@ -32,6 +46,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadFileList();
   setupUploadArea();
   setupButtons();
+  setupPagination();
   checkResumeUpload();
 });
 
@@ -303,6 +318,76 @@ function checkResumeUpload() {
   }
 }
 
+// ==================== Pagination Setup ====================
+
+function setupPagination() {
+  // Search input with debounce
+  searchInput.addEventListener("input", () => {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      currentSearch = searchInput.value.trim();
+      currentPage = 1;
+      loadFileList();
+    }, 300);
+  });
+
+  // Page size selector
+  pageSizeSelect.addEventListener("change", () => {
+    currentPageSize = parseInt(pageSizeSelect.value);
+    currentPage = 1;
+    loadFileList();
+  });
+
+  // Previous page
+  prevPageBtn.addEventListener("click", () => {
+    if (currentPage > 1) {
+      currentPage--;
+      loadFileList();
+    }
+  });
+
+  // Next page
+  nextPageBtn.addEventListener("click", () => {
+    currentPage++;
+    loadFileList();
+  });
+}
+
+function renderPagination(total, page, pageSize, totalPages) {
+  if (total === 0) {
+    pagination.style.display = "none";
+    return;
+  }
+
+  pagination.style.display = "flex";
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
+  paginationInfo.textContent = `共 ${total} 个文件，显示 ${start}-${end}`;
+
+  prevPageBtn.disabled = page <= 1;
+  nextPageBtn.disabled = page >= totalPages;
+
+  // Render page numbers
+  pageNumbers.innerHTML = "";
+  const maxButtons = 5;
+  let startPage = Math.max(1, page - Math.floor(maxButtons / 2));
+  let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+  if (endPage - startPage < maxButtons - 1) {
+    startPage = Math.max(1, endPage - maxButtons + 1);
+  }
+
+  for (let i = startPage; i <= endPage; i++) {
+    const btn = document.createElement("button");
+    btn.className = `btn btn-page-num${i === page ? " active" : ""}`;
+    btn.textContent = i;
+    btn.addEventListener("click", () => {
+      currentPage = i;
+      loadFileList();
+    });
+    pageNumbers.appendChild(btn);
+  }
+}
+
 // ==================== File List ====================
 
 async function loadFileList() {
@@ -310,16 +395,32 @@ async function loadFileList() {
     fileListLoading.style.display = "block";
     emptyState.style.display = "none";
     fileTable.style.display = "none";
+    pagination.style.display = "none";
 
-    const res = await fetch("/api/files");
+    const params = new URLSearchParams({
+      page: currentPage,
+      pageSize: currentPageSize,
+    });
+    if (currentSearch) {
+      params.set("search", currentSearch);
+    }
+
+    const res = await fetch(`/api/files?${params}`);
     if (!res.ok) throw new Error("Failed to load file list");
 
-    const files = await res.json();
+    const data = await res.json();
+    const { files, total, page, pageSize, totalPages } = data;
 
     fileListLoading.style.display = "none";
 
     if (files.length === 0) {
       emptyState.style.display = "block";
+      if (currentSearch) {
+        emptyState.textContent = `没有找到包含"${currentSearch}"的文件`;
+      } else {
+        emptyState.textContent = "暂无文件，快来上传第一个文件吧！";
+      }
+      renderPagination(total, page, pageSize, totalPages);
       return;
     }
 
@@ -344,6 +445,8 @@ async function loadFileList() {
 
       fileTableBody.appendChild(tr);
     }
+
+    renderPagination(total, page, pageSize, totalPages);
   } catch (err) {
     fileListLoading.textContent = "加载失败，请刷新页面重试";
   }

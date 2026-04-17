@@ -1,18 +1,18 @@
-// GET /api/files - List all uploaded files
-import { listFiles } from "../lib/kv.js";
+// GET /api/files - List uploaded files with pagination and search
+import { listFilesPaged } from "../lib/kv.js";
 
 export async function onRequestGet(context) {
   try {
     const filesKv = context.env.FILES;
-    const allFiles = await listFiles(filesKv);
+    const url = new URL(context.request.url);
 
-    // Only return finished files to visitors
-    const finishedFiles = allFiles.filter((f) => f.status === "finished");
+    const page = Math.max(1, parseInt(url.searchParams.get("page")) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get("pageSize")) || 20));
+    const search = (url.searchParams.get("search") || "").trim();
 
-    // Sort by creation date, newest first
-    finishedFiles.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const result = await listFilesPaged(filesKv, { page, pageSize, search });
 
-    return new Response(JSON.stringify(finishedFiles), {
+    return new Response(JSON.stringify(result), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
