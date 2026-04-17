@@ -1,5 +1,8 @@
 // GitHub API helper functions
-import { GITHUB_OWNER, BUCKET_PREFIX, MAX_BUCKET_SIZE_KB, GITHUB_API, RAW_GITHUB } from "./constants.js";
+import { BUCKET_PREFIX, MAX_BUCKET_SIZE_KB, GITHUB_API, RAW_GITHUB } from "./constants.js";
+
+// Cache the GitHub owner username (resolved from PAT)
+let _cachedOwner = null;
 
 /**
  * Common headers for GitHub API requests
@@ -11,6 +14,28 @@ function headers(pat) {
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "LwtStore/1.0",
   };
+}
+
+/**
+ * Get the authenticated GitHub user's login name from the PAT.
+ * Result is cached for the lifetime of the worker instance.
+ * @param {string} pat - GitHub Personal Access Token
+ * @returns {string} - GitHub username
+ */
+export async function getOwner(pat) {
+  if (_cachedOwner) return _cachedOwner;
+
+  const res = await fetch(`${GITHUB_API}/user`, {
+    headers: headers(pat),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to get GitHub user from PAT: ${res.status}. Please check your GITHUB_PRIVATE_KEY.`);
+  }
+
+  const data = await res.json();
+  _cachedOwner = data.login;
+  return _cachedOwner;
 }
 
 /**
@@ -46,7 +71,8 @@ export async function createRepo(pat, repoName) {
  * @returns {number} - Size in KB
  */
 export async function getRepoSize(pat, repo) {
-  const res = await fetch(`${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}`, {
+  const owner = await getOwner(pat);
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, {
     headers: headers(pat),
   });
 
@@ -64,13 +90,14 @@ export async function getRepoSize(pat, repo) {
  * @returns {Array} - Array of repo objects with name and size
  */
 export async function listBuckets(pat) {
+  const owner = await getOwner(pat);
   const buckets = [];
   let page = 1;
   const perPage = 100;
 
   while (true) {
     const res = await fetch(
-      `${GITHUB_API}/users/${GITHUB_OWNER}/repos?per_page=${perPage}&page=${page}&sort=created`,
+      `${GITHUB_API}/users/${owner}/repos?per_page=${perPage}&page=${page}&sort=created`,
       { headers: headers(pat) }
     );
 
@@ -135,6 +162,7 @@ export async function selectBucket(pat, fileSize) {
  * @returns {object} - Upload result with SHA
  */
 export async function uploadFile(pat, repo, path, contentBase64, message) {
+  const owner = await getOwner(pat);
   // First check if file already exists (to get SHA for update)
   let existingSha = null;
   try {
@@ -153,7 +181,7 @@ export async function uploadFile(pat, repo, path, contentBase64, message) {
   }
 
   const res = await fetch(
-    `${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`,
+    `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`,
     {
       method: "PUT",
       headers: { ...headers(pat), "Content-Type": "application/json" },
@@ -170,7 +198,7 @@ export async function uploadFile(pat, repo, path, contentBase64, message) {
   return {
     sha: data.content.sha,
     size: data.content.size,
-    downloadUrl: `${RAW_GITHUB}/${GITHUB_OWNER}/${repo}/main/${path}`,
+    downloadUrl: `${RAW_GITHUB}/${owner}/${repo}/main/${path}`,
   };
 }
 
@@ -182,8 +210,9 @@ export async function uploadFile(pat, repo, path, contentBase64, message) {
  * @returns {string} - File SHA
  */
 export async function getFileSha(pat, repo, path) {
+  const owner = await getOwner(pat);
   const res = await fetch(
-    `${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`,
+    `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`,
     { headers: headers(pat) }
   );
 
@@ -203,7 +232,8 @@ export async function getFileSha(pat, repo, path) {
  * @returns {Response} - Fetch response (streamable)
  */
 export async function fetchRawFile(pat, repo, path) {
-  const url = `${RAW_GITHUB}/${GITHUB_OWNER}/${repo}/main/${path}`;
+  const owner = await getOwner(pat);
+  const url = `${RAW_GITHUB}/${owner}/${repo}/main/${path}`;
   const res = await fetch(url, {
     headers: {
       "Authorization": `Bearer ${pat}`,
