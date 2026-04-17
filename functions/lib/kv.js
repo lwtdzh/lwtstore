@@ -132,22 +132,35 @@ export async function listFilesPaged(filesKv, { page = 1, pageSize = 20, search 
       if (key.name.startsWith("hash:")) continue;
 
       const meta = key.metadata || {};
+      let fileName = meta.fileName || "";
+      let fileSize = meta.fileSize || 0;
+      let createdAt = meta.createdAt || "";
+      let status = meta.status || "";
+
+      // If metadata is missing (legacy records), fetch full record
+      if (!fileName) {
+        const file = await filesKv.get(key.name, "json");
+        if (!file) continue;
+        fileName = file.fileName || "";
+        fileSize = file.fileSize || 0;
+        createdAt = file.createdAt || "";
+        status = file.status || "";
+      }
 
       // Filter: only finished files
-      if (meta.status && meta.status !== "finished") continue;
+      if (status && status !== "finished") continue;
 
       // Filter: fuzzy search on fileName (case-insensitive)
       if (search) {
-        const fileName = (meta.fileName || "").toLowerCase();
         const searchLower = search.toLowerCase();
-        if (!fileName.includes(searchLower)) continue;
+        if (!fileName.toLowerCase().includes(searchLower)) continue;
       }
 
       allKeys.push({
         fileId: key.name,
-        fileName: meta.fileName || "",
-        fileSize: meta.fileSize || 0,
-        createdAt: meta.createdAt || "",
+        fileName,
+        fileSize,
+        createdAt,
       });
     }
 
