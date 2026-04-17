@@ -1,5 +1,5 @@
 // POST /api/upload/part - Upload a single file part
-import { getMetadata, setMetadata } from "../../lib/kv.js";
+import { getFile, setFile } from "../../lib/kv.js";
 import { uploadFile } from "../../lib/github.js";
 
 export async function onRequestPost(context) {
@@ -14,11 +14,11 @@ export async function onRequestPost(context) {
     }
 
     const partIndex = parseInt(partIndexStr, 10);
-    const kv = context.env.KV_STORE;
+    const filesKv = context.env.FILES;
     const pat = context.env.GITHUB_PRIVATE_KEY;
 
-    // Get metadata
-    const metadata = await getMetadata(kv, fileId);
+    // Get file record
+    const metadata = await getFile(filesKv, fileId);
     if (!metadata) {
       return jsonResponse({ error: "File not found. Please initialize upload first." }, 404);
     }
@@ -69,7 +69,7 @@ export async function onRequestPost(context) {
       sha: result.sha,
     };
 
-    await setMetadata(kv, fileId, metadata);
+    await setFile(filesKv, fileId, metadata);
 
     const uploadedParts = metadata.parts
       .filter((p) => p.status === "done")

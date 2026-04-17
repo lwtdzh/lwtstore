@@ -1,16 +1,16 @@
 // GET /api/download/{fileId} - Download a file with HTTP Range support
-import { getMetadata } from "../../lib/kv.js";
+import { getFile } from "../../lib/kv.js";
 import { fetchRawFile } from "../../lib/github.js";
 import { PART_SIZE } from "../../lib/constants.js";
 
 export async function onRequestGet(context) {
   try {
     const fileId = context.params.fileId;
-    const kv = context.env.KV_STORE;
+    const filesKv = context.env.FILES;
     const pat = context.env.GITHUB_PRIVATE_KEY;
 
-    // Get file metadata
-    const metadata = await getMetadata(kv, fileId);
+    // Get file record
+    const metadata = await getFile(filesKv, fileId);
     if (!metadata) {
       return new Response("File not found", { status: 404 });
     }
@@ -122,9 +122,9 @@ export async function onRequestGet(context) {
 export async function onRequestHead(context) {
   try {
     const fileId = context.params.fileId;
-    const kv = context.env.KV_STORE;
+    const filesKv = context.env.FILES;
 
-    const metadata = await getMetadata(kv, fileId);
+    const metadata = await getFile(filesKv, fileId);
     if (!metadata || metadata.status !== "finished") {
       return new Response(null, { status: 404 });
     }

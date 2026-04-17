@@ -1,86 +1,82 @@
 // KV helper functions for Lwt's Store
-// Uses a single KV namespace (KV_STORE) with key prefixes for METADATA and INDEX
-
-const METADATA_PREFIX = "metadata:";
-const INDEX_LIST_KEY = "index:files";
+//
+// Two KV namespaces:
+//   FILES    - each key is a fileId, value is the file's full data (metadata + parts + status)
+//   METADATA - reserved for future use (e.g., site config, user settings, analytics)
 
 /**
- * Get file metadata from KV
- * @param {KVNamespace} kv - KV namespace binding
+ * Get a file record from FILES KV
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
  * @param {string} fileId - File ID
- * @returns {object|null} - File metadata or null
+ * @returns {object|null} - File record or null
  */
-export async function getMetadata(kv, fileId) {
-  const data = await kv.get(`${METADATA_PREFIX}${fileId}`, "json");
-  return data;
+export async function getFile(filesKv, fileId) {
+  return await filesKv.get(fileId, "json");
 }
 
 /**
- * Set file metadata in KV
- * @param {KVNamespace} kv - KV namespace binding
+ * Save a file record to FILES KV
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
  * @param {string} fileId - File ID
- * @param {object} data - Metadata object
+ * @param {object} data - File record object
  */
-export async function setMetadata(kv, fileId, data) {
-  await kv.put(`${METADATA_PREFIX}${fileId}`, JSON.stringify(data));
+export async function setFile(filesKv, fileId, data) {
+  await filesKv.put(fileId, JSON.stringify(data));
 }
 
 /**
- * Get the full file index (list of all files)
- * @param {KVNamespace} kv - KV namespace binding
- * @returns {Array} - Array of file index entries
+ * List all file records from FILES KV
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
+ * @returns {Array} - Array of file records
  */
-export async function getIndex(kv) {
-  const data = await kv.get(INDEX_LIST_KEY, "json");
-  return data || [];
-}
+export async function listFiles(filesKv) {
+  const files = [];
+  let cursor = null;
 
-/**
- * Add a file entry to the index
- * @param {KVNamespace} kv - KV namespace binding
- * @param {object} fileInfo - File info object { fileId, fileName, fileSize, status, createdAt, downloadUrl }
- */
-export async function addToIndex(kv, fileInfo) {
-  const index = await getIndex(kv);
-  // Check if already exists (for resume scenarios)
-  const existingIdx = index.findIndex((f) => f.fileId === fileInfo.fileId);
-  if (existingIdx >= 0) {
-    index[existingIdx] = { ...index[existingIdx], ...fileInfo };
-  } else {
-    index.push(fileInfo);
-  }
-  await kv.put(INDEX_LIST_KEY, JSON.stringify(index));
-}
+  do {
+    const listOpts = { limit: 1000 };
+    if (cursor) listOpts.cursor = cursor;
 
-/**
- * Update a file entry in the index
- * @param {KVNamespace} kv - KV namespace binding
- * @param {string} fileId - File ID
- * @param {object} updates - Fields to update
- */
-export async function updateIndex(kv, fileId, updates) {
-  const index = await getIndex(kv);
-  const idx = index.findIndex((f) => f.fileId === fileId);
-  if (idx >= 0) {
-    index[idx] = { ...index[idx], ...updates };
-    await kv.put(INDEX_LIST_KEY, JSON.stringify(index));
-  }
-}
+    const result = await filesKv.list(listOpts);
 
-/**
- * Find a file metadata by file hash (for resume detection)
- * @param {KVNamespace} kv - KV namespace binding
- * @param {string} fileHash - File hash (name+size+lastModified)
- * @returns {object|null} - Metadata if found
- */
-export async function findByHash(kv, fileHash) {
-  // List all metadata keys to find matching hash
-  const list = await kv.list({ prefix: METADATA_PREFIX });
-  for (const key of list.keys) {
-    const meta = await kv.get(key.name, "json");
-    if (meta && meta.fileHash === fileHash && meta.status === "uploading") {
-      return meta;
+    for (const key of result.keys) {
+      const file = await filesKv.get(key.name, "json");
+      if (file) {
+        files.push(file);
+      }
     }
-  }
+
+    cursor = result.list_complete ? null : result.cursor;
+  } while (cursor);
+
+  return files;
+}
+
+/**
+ * Find a file record by file hash (for resume detection)
+ * Scans all keys in FILES KV to find a matching uploading file
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
+ * @param {string} fileHash - File hash (name+size+lastModified)
+ * @returns {object|null} - File record if found
+ */
+export async function findByHash(filesKv, fileHash) {
+  let cursor = null;
+
+  do {
+    const listOpts = { limit: 1000 };
+    if (cursor) listOpts.cursor = cursor;
+
+    const result = await filesKv.list(listOpts);
+
+    for (const key of result.keys) {
+      const file = await filesKv.get(key.name, "json");
+      if (file && file.fileHash === fileHash && file.status === "uploading") {
+        return file;
+      }
+    }
+
+    cursor = result.list_complete ? null : result.cursor;
+  } while (cursor);
+
   return null;
 }

@@ -1,13 +1,13 @@
 // GET /api/files - List all uploaded files
-import { getIndex } from "../lib/kv.js";
+import { listFiles } from "../lib/kv.js";
 
 export async function onRequestGet(context) {
   try {
-    const kv = context.env.KV_STORE;
-    const index = await getIndex(kv);
+    const filesKv = context.env.FILES;
+    const allFiles = await listFiles(filesKv);
 
     // Only return finished files to visitors
-    const finishedFiles = index.filter((f) => f.status === "finished");
+    const finishedFiles = allFiles.filter((f) => f.status === "finished");
 
     // Sort by creation date, newest first
     finishedFiles.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));

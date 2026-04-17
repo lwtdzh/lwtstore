@@ -1,6 +1,6 @@
 // POST /api/upload/init - Initialize a new file upload or resume an existing one
 import { PART_SIZE, MAX_FILE_SIZE } from "../../lib/constants.js";
-import { getMetadata, setMetadata, addToIndex, findByHash } from "../../lib/kv.js";
+import { getFile, setFile, findByHash } from "../../lib/kv.js";
 import { selectBucket } from "../../lib/github.js";
 
 export async function onRequestPost(context) {
@@ -16,11 +16,11 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: `File size exceeds maximum of 5GB` }, 400);
     }
 
-    const kv = context.env.KV_STORE;
+    const filesKv = context.env.FILES;
     const pat = context.env.GITHUB_PRIVATE_KEY;
 
     // Check for existing upload with same hash (resume support)
-    const existing = await findByHash(kv, fileHash);
+    const existing = await findByHash(filesKv, fileHash);
     if (existing) {
       const uploadedParts = existing.parts
         .filter((p) => p.status === "done")
@@ -59,8 +59,8 @@ export async function onRequestPost(context) {
       });
     }
 
-    // Create metadata
-    const metadata = {
+    // Create file record
+    const fileRecord = {
       fileId,
       fileName,
       fileSize,
@@ -69,21 +69,12 @@ export async function onRequestPost(context) {
       bucketRepo,
       totalParts,
       parts,
+      downloadUrl: `/api/download/${fileId}`,
       createdAt: new Date().toISOString(),
       completedAt: null,
     };
 
-    await setMetadata(kv, fileId, metadata);
-
-    // Add to index (with uploading status)
-    await addToIndex(kv, {
-      fileId,
-      fileName,
-      fileSize,
-      status: "uploading",
-      createdAt: metadata.createdAt,
-      downloadUrl: `/api/download/${fileId}`,
-    });
+    await setFile(filesKv, fileId, fileRecord);
 
     return jsonResponse({
       fileId,

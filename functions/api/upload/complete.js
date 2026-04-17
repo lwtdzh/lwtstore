@@ -1,5 +1,5 @@
 // POST /api/upload/complete - Finalize a file upload
-import { getMetadata, setMetadata, updateIndex } from "../../lib/kv.js";
+import { getFile, setFile } from "../../lib/kv.js";
 
 export async function onRequestPost(context) {
   try {
@@ -9,10 +9,10 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: "Missing required field: fileId" }, 400);
     }
 
-    const kv = context.env.KV_STORE;
+    const filesKv = context.env.FILES;
 
-    // Get metadata
-    const metadata = await getMetadata(kv, fileId);
+    // Get file record
+    const metadata = await getFile(filesKv, fileId);
     if (!metadata) {
       return jsonResponse({ error: "File not found." }, 404);
     }
@@ -34,16 +34,10 @@ export async function onRequestPost(context) {
       }, 400);
     }
 
-    // Update metadata status
+    // Update file record status
     metadata.status = "finished";
     metadata.completedAt = new Date().toISOString();
-    await setMetadata(kv, fileId, metadata);
-
-    // Update index
-    await updateIndex(kv, fileId, {
-      status: "finished",
-      completedAt: metadata.completedAt,
-    });
+    await setFile(filesKv, fileId, metadata);
 
     return jsonResponse({
       success: true,
