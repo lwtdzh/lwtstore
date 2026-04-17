@@ -111,14 +111,10 @@ export async function findByHash(filesKv, fileHash) {
 }
 
 /**
- * List files with pagination and optional search (using KV metadata for efficiency).
- * Uses KV list() metadata to filter without calling get() for each key.
- * @param {KVNamespace} filesKv - FILES KV namespace binding
- * @param {object} options - { page, pageSize, search }
- * @returns {object} - { files, total, page, pageSize, totalPages }
+ * Collect all finished file keys with metadata, with fallback for legacy records.
+ * Shared helper for both paged listing and search.
  */
-export async function listFilesPaged(filesKv, { page = 1, pageSize = 20, search = "" } = {}) {
-  // Collect all finished file keys with metadata from KV list()
+async function collectAllFileKeys(filesKv) {
   const allKeys = [];
   let cursor = null;
 
@@ -145,23 +141,19 @@ export async function listFilesPaged(filesKv, { page = 1, pageSize = 20, search 
         fileSize = file.fileSize || 0;
         createdAt = file.createdAt || "";
         status = file.status || "";
+
+        // Backfill metadata for legacy records so future requests are fast
+        if (fileName) {
+          await filesKv.put(key.name, JSON.stringify(file), {
+            metadata: { fileName, status, fileSize, createdAt },
+          });
+        }
       }
 
       // Filter: only finished files
       if (status && status !== "finished") continue;
 
-      // Filter: fuzzy search on fileName (case-insensitive)
-      if (search) {
-        const searchLower = search.toLowerCase();
-        if (!fileName.toLowerCase().includes(searchLower)) continue;
-      }
-
-      allKeys.push({
-        fileId: key.name,
-        fileName,
-        fileSize,
-        createdAt,
-      });
+      allKeys.push({ fileId: key.name, fileName, fileSize, createdAt });
     }
 
     cursor = result.list_complete ? null : result.cursor;
@@ -173,27 +165,110 @@ export async function listFilesPaged(filesKv, { page = 1, pageSize = 20, search 
     return new Date(b.createdAt) - new Date(a.createdAt);
   });
 
-  const total = allKeys.length;
+  return allKeys;
+}
+
+/**
+ * List files with pagination and optional search.
+ *
+ * Two modes:
+ *   - No search: uses KV list() with limit to quickly return the first page
+ *     without scanning all keys. This makes initial page load fast.
+ *   - With search: scans all keys (using metadata) to find matches across
+ *     all files, then paginates the results.
+ *
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
+ * @param {object} options - { page, pageSize, search }
+ * @returns {object} - { files, total, page, pageSize, totalPages }
+ */
+export async function listFilesPaged(filesKv, { page = 1, pageSize = 20, search = "" } = {}) {
+  // With search: must scan all keys to find matches across all pages
+  if (search) {
+    const allKeys = await collectAllFileKeys(filesKv);
+
+    // Filter by search keyword
+    const searchLower = search.toLowerCase();
+    const matchedKeys = allKeys.filter((k) =>
+      k.fileName.toLowerCase().includes(searchLower)
+    );
+
+    const total = matchedKeys.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(Math.max(1, page), totalPages);
+    const startIndex = (safePage - 1) * pageSize;
+    const pageKeys = matchedKeys.slice(startIndex, startIndex + pageSize);
+
+    const files = [];
+    for (const key of pageKeys) {
+      const file = await filesKv.get(key.fileId, "json");
+      if (file) files.push(file);
+    }
+
+    return { files, total, page: safePage, pageSize, totalPages };
+  }
+
+  // No search: fast path using KV list() with limit for quick first-page load
+  // We collect finished files page by page using KV cursor
+  const collected = [];
+  let kvCursor = null;
+  const targetCount = page * pageSize; // Need enough items to fill up to current page
+
+  do {
+    const listOpts = { limit: 1000 };
+    if (kvCursor) listOpts.cursor = kvCursor;
+
+    const result = await filesKv.list(listOpts);
+
+    for (const key of result.keys) {
+      if (key.name.startsWith("hash:")) continue;
+
+      const meta = key.metadata || {};
+      let fileName = meta.fileName || "";
+      let fileSize = meta.fileSize || 0;
+      let createdAt = meta.createdAt || "";
+      let status = meta.status || "";
+
+      if (!fileName) {
+        const file = await filesKv.get(key.name, "json");
+        if (!file) continue;
+        fileName = file.fileName || "";
+        fileSize = file.fileSize || 0;
+        createdAt = file.createdAt || "";
+        status = file.status || "";
+
+        // Backfill metadata
+        if (fileName) {
+          await filesKv.put(key.name, JSON.stringify(file), {
+            metadata: { fileName, status, fileSize, createdAt },
+          });
+        }
+      }
+
+      if (status && status !== "finished") continue;
+
+      collected.push({ fileId: key.name, fileName, fileSize, createdAt });
+    }
+
+    kvCursor = result.list_complete ? null : result.cursor;
+  } while (kvCursor);
+
+  // Sort by createdAt descending
+  collected.sort((a, b) => {
+    if (!a.createdAt || !b.createdAt) return 0;
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  });
+
+  const total = collected.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const startIndex = (safePage - 1) * pageSize;
-  const endIndex = startIndex + pageSize;
-  const pageKeys = allKeys.slice(startIndex, endIndex);
+  const pageKeys = collected.slice(startIndex, startIndex + pageSize);
 
-  // Only fetch full records for the current page
   const files = [];
   for (const key of pageKeys) {
     const file = await filesKv.get(key.fileId, "json");
-    if (file) {
-      files.push(file);
-    }
+    if (file) files.push(file);
   }
 
-  return {
-    files,
-    total,
-    page: safePage,
-    pageSize,
-    totalPages,
-  };
+  return { files, total, page: safePage, pageSize, totalPages };
 }
