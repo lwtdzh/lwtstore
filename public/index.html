@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lwt's Store</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Lwt's Store</h1>
+      <p class="subtitle">自由上传您的文件并自由下载！</p>
+    </header>
+
+    <!-- Upload Section -->
+    <section class="upload-section">
+      <div class="upload-area" id="uploadArea">
+        <div class="upload-icon">📁</div>
+        <p>拖拽文件到此处，或点击选择文件</p>
+        <p class="upload-hint">支持最大 5GB 的文件，支持断点续传</p>
+        <input type="file" id="fileInput" hidden>
+      </div>
+
+      <!-- Upload Progress -->
+      <div class="upload-progress" id="uploadProgress" style="display: none;">
+        <div class="progress-info">
+          <span class="file-name" id="uploadFileName"></span>
+          <span class="progress-text" id="progressText">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-details">
+          <span id="uploadedSize">0 MB</span> / <span id="totalSize">0 MB</span>
+          <span class="upload-status" id="uploadStatus"></span>
+        </div>
+        <button class="btn btn-cancel" id="cancelBtn" style="display: none;">取消</button>
+      </div>
+
+      <!-- Upload Complete -->
+      <div class="upload-complete" id="uploadComplete" style="display: none;">
+        <div class="success-icon">✅</div>
+        <p>上传完成！</p>
+        <div class="download-link-box">
+          <input type="text" id="downloadLinkInput" readonly>
+          <button class="btn btn-copy" id="copyLinkBtn">复制链接</button>
+        </div>
+        <button class="btn btn-new" id="newUploadBtn">上传新文件</button>
+      </div>
+    </section>
+
+    <!-- File List Section -->
+    <section class="file-list-section">
+      <h2>已上传的文件</h2>
+      <div class="file-list" id="fileList">
+        <div class="loading" id="fileListLoading">加载中...</div>
+        <div class="empty-state" id="emptyState" style="display: none;">
+          暂无文件，快来上传第一个文件吧！
+        </div>
+        <table class="file-table" id="fileTable" style="display: none;">
+          <thead>
+            <tr>
+              <th>文件名</th>
+              <th>大小</th>
+              <th>上传时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="fileTableBody">
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <p>Powered by Cloudflare Pages & GitHub</p>
+    </footer>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,219 @@
+// GitHub API helper functions
+import { GITHUB_OWNER, BUCKET_PREFIX, MAX_BUCKET_SIZE_KB, GITHUB_API, RAW_GITHUB } from "./constants.js";
+
+/**
+ * Common headers for GitHub API requests
+ */
+function headers(pat) {
+  return {
+    "Authorization": `Bearer ${pat}`,
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "LwtStore/1.0",
+  };
+}
+
+/**
+ * Create a new GitHub repository under the configured owner
+ * @param {string} pat - GitHub Personal Access Token
+ * @param {string} repoName - Repository name (e.g., "lwtsub-bucket-001")
+ * @returns {object} - Created repo info
+ */
+export async function createRepo(pat, repoName) {
+  const res = await fetch(`${GITHUB_API}/user/repos`, {
+    method: "POST",
+    headers: { ...headers(pat), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: repoName,
+      description: "Lwt Store storage bucket - auto managed",
+      private: false,
+      auto_init: true,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Failed to create repo ${repoName}: ${res.status} ${err}`);
+  }
+
+  return await res.json();
+}
+
+/**
+ * Get repository size in KB
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @returns {number} - Size in KB
+ */
+export async function getRepoSize(pat, repo) {
+  const res = await fetch(`${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}`, {
+    headers: headers(pat),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to get repo size for ${repo}: ${res.status}`);
+  }
+
+  const data = await res.json();
+  return data.size; // size in KB
+}
+
+/**
+ * List all bucket repositories (lwtsub-bucket-*)
+ * @param {string} pat - GitHub PAT
+ * @returns {Array} - Array of repo objects with name and size
+ */
+export async function listBuckets(pat) {
+  const buckets = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    const res = await fetch(
+      `${GITHUB_API}/users/${GITHUB_OWNER}/repos?per_page=${perPage}&page=${page}&sort=created`,
+      { headers: headers(pat) }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to list repos: ${res.status}`);
+    }
+
+    const repos = await res.json();
+    if (repos.length === 0) break;
+
+    for (const repo of repos) {
+      if (repo.name.startsWith(BUCKET_PREFIX)) {
+        buckets.push({
+          name: repo.name,
+          sizeKB: repo.size,
+        });
+      }
+    }
+
+    if (repos.length < perPage) break;
+    page++;
+  }
+
+  return buckets;
+}
+
+/**
+ * Select a suitable bucket for a file, or create a new one
+ * @param {string} pat - GitHub PAT
+ * @param {number} fileSize - File size in bytes
+ * @returns {string} - Bucket repo name
+ */
+export async function selectBucket(pat, fileSize) {
+  const fileSizeKB = Math.ceil(fileSize / 1024);
+  const buckets = await listBuckets(pat);
+
+  // Try to find an existing bucket with enough space
+  for (const bucket of buckets) {
+    if (bucket.sizeKB + fileSizeKB < MAX_BUCKET_SIZE_KB) {
+      return bucket.name;
+    }
+  }
+
+  // No suitable bucket found, create a new one
+  const nextNum = (buckets.length + 1).toString().padStart(3, "0");
+  const newBucketName = `${BUCKET_PREFIX}${nextNum}`;
+  await createRepo(pat, newBucketName);
+
+  // Wait a moment for GitHub to initialize the repo
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  return newBucketName;
+}
+
+/**
+ * Upload a file to a GitHub repository using the Contents API
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @param {string} path - File path within the repo
+ * @param {string} contentBase64 - Base64 encoded file content
+ * @param {string} message - Commit message
+ * @returns {object} - Upload result with SHA
+ */
+export async function uploadFile(pat, repo, path, contentBase64, message) {
+  // First check if file already exists (to get SHA for update)
+  let existingSha = null;
+  try {
+    existingSha = await getFileSha(pat, repo, path);
+  } catch (e) {
+    // File doesn't exist, that's fine
+  }
+
+  const body = {
+    message: message || `Upload ${path}`,
+    content: contentBase64,
+  };
+
+  if (existingSha) {
+    body.sha = existingSha;
+  }
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`,
+    {
+      method: "PUT",
+      headers: { ...headers(pat), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Failed to upload file ${path} to ${repo}: ${res.status} ${err}`);
+  }
+
+  const data = await res.json();
+  return {
+    sha: data.content.sha,
+    size: data.content.size,
+    downloadUrl: `${RAW_GITHUB}/${GITHUB_OWNER}/${repo}/main/${path}`,
+  };
+}
+
+/**
+ * Get the SHA of a file in a repository
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @param {string} path - File path
+ * @returns {string} - File SHA
+ */
+export async function getFileSha(pat, repo, path) {
+  const res = await fetch(
+    `${GITHUB_API}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`,
+    { headers: headers(pat) }
+  );
+
+  if (!res.ok) {
+    throw new Error(`File not found: ${path} in ${repo}`);
+  }
+
+  const data = await res.json();
+  return data.sha;
+}
+
+/**
+ * Fetch raw file content from GitHub
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @param {string} path - File path
+ * @returns {Response} - Fetch response (streamable)
+ */
+export async function fetchRawFile(pat, repo, path) {
+  const url = `${RAW_GITHUB}/${GITHUB_OWNER}/${repo}/main/${path}`;
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${pat}`,
+      "User-Agent": "LwtStore/1.0",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch raw file ${path} from ${repo}: ${res.status}`);
+  }
+
+  return res;
+}

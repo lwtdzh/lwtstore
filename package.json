@@ -1,0 +1,10 @@
+{
+  "name": "lwt-store",
+  "version": "1.0.0",
+  "description": "Lwt's Store - A file hosting service on Cloudflare Pages with GitHub storage backend",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler pages dev public --kv KV_STORE",
+    "deploy": "wrangler pages deploy public"
+  }
+}
