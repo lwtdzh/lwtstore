@@ -1,6 +1,6 @@
 // POST /api/upload/init - Initialize a new file upload or resume an existing one
 import { PART_SIZE, MAX_FILE_SIZE } from "../../lib/constants.js";
-import { getFile, setFile, findByHash } from "../../lib/kv.js";
+import { getFile, setFile, findByHash, setHashMapping } from "../../lib/kv.js";
 import { selectBucket } from "../../lib/github.js";
 
 export async function onRequestPost(context) {
@@ -75,6 +75,9 @@ export async function onRequestPost(context) {
     };
 
     await setFile(filesKv, fileId, fileRecord);
+
+    // Save hash->fileId mapping for fast resume detection
+    await setHashMapping(filesKv, fileHash, fileId);
 
     return jsonResponse({
       fileId,

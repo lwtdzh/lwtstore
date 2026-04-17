@@ -40,6 +40,9 @@ export async function listFiles(filesKv) {
     const result = await filesKv.list(listOpts);
 
     for (const key of result.keys) {
+      // Skip hash mapping keys (hash:xxx -> fileId)
+      if (key.name.startsWith("hash:")) continue;
+
       const file = await filesKv.get(key.name, "json");
       if (file) {
         files.push(file);
@@ -53,30 +56,39 @@ export async function listFiles(filesKv) {
 }
 
 /**
+ * Save a hash-to-fileId mapping for fast resume detection
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
+ * @param {string} fileHash - File hash (name+size+lastModified)
+ * @param {string} fileId - File ID
+ */
+export async function setHashMapping(filesKv, fileHash, fileId) {
+  await filesKv.put(`hash:${fileHash}`, fileId);
+}
+
+/**
+ * Remove a hash-to-fileId mapping (after upload completes)
+ * @param {KVNamespace} filesKv - FILES KV namespace binding
+ * @param {string} fileHash - File hash
+ */
+export async function deleteHashMapping(filesKv, fileHash) {
+  await filesKv.delete(`hash:${fileHash}`);
+}
+
+/**
  * Find a file record by file hash (for resume detection)
- * Scans all keys in FILES KV to find a matching uploading file
+ * Uses a direct hash->fileId mapping key for consistency (avoids list() eventual consistency)
  * @param {KVNamespace} filesKv - FILES KV namespace binding
  * @param {string} fileHash - File hash (name+size+lastModified)
  * @returns {object|null} - File record if found
  */
 export async function findByHash(filesKv, fileHash) {
-  let cursor = null;
-
-  do {
-    const listOpts = { limit: 1000 };
-    if (cursor) listOpts.cursor = cursor;
-
-    const result = await filesKv.list(listOpts);
-
-    for (const key of result.keys) {
-      const file = await filesKv.get(key.name, "json");
-      if (file && file.fileHash === fileHash && file.status === "uploading") {
-        return file;
-      }
+  // Direct lookup via hash mapping key
+  const fileId = await filesKv.get(`hash:${fileHash}`);
+  if (fileId) {
+    const file = await filesKv.get(fileId, "json");
+    if (file && file.status === "uploading") {
+      return file;
     }
-
-    cursor = result.list_complete ? null : result.cursor;
-  } while (cursor);
-
+  }
   return null;
 }

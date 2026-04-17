@@ -1,5 +1,5 @@
 // POST /api/upload/complete - Finalize a file upload
-import { getFile, setFile } from "../../lib/kv.js";
+import { getFile, setFile, deleteHashMapping } from "../../lib/kv.js";
 
 export async function onRequestPost(context) {
   try {
@@ -38,6 +38,11 @@ export async function onRequestPost(context) {
     metadata.status = "finished";
     metadata.completedAt = new Date().toISOString();
     await setFile(filesKv, fileId, metadata);
+
+    // Remove hash mapping (no longer needed for resume)
+    if (metadata.fileHash) {
+      await deleteHashMapping(filesKv, metadata.fileHash);
+    }
 
     return jsonResponse({
       success: true,
