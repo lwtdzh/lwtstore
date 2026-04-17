@@ -76,7 +76,7 @@ test.describe("Page Load & Basic UI", () => {
 // Test Suite 2: API Endpoints Direct Testing
 // ============================================================
 test.describe("API Endpoints", () => {
-  test("GET /api/files should return JSON array", async ({ request }) => {
+  test("GET /api/files should return paginated JSON", async ({ request }) => {
     const res = await request.get(`${BASE_URL}/api/files`);
     expect(res.status()).toBe(200);
 
@@ -84,7 +84,14 @@ test.describe("API Endpoints", () => {
     expect(contentType).toContain("application/json");
 
     const body = await res.json();
-    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveProperty("files");
+    expect(body).toHaveProperty("total");
+    expect(body).toHaveProperty("page");
+    expect(body).toHaveProperty("pageSize");
+    expect(body).toHaveProperty("totalPages");
+    expect(Array.isArray(body.files)).toBe(true);
+    expect(body.page).toBe(1);
+    expect(body.pageSize).toBe(20);
   });
 
   test("GET /api/upload/status with invalid fileId should return 404", async ({ request }) => {
@@ -480,7 +487,8 @@ test.describe("Multi-thread Download Simulation", () => {
 
     // Get a file from the list
     const listRes = await request.get(`${BASE_URL}/api/files`);
-    const files = await listRes.json();
+    const listData = await listRes.json();
+    const files = listData.files || [];
 
     if (files.length === 0) {
       test.skip();
@@ -761,5 +769,298 @@ test.describe("Static Assets", () => {
     expect(res.status()).toBe(200);
     const contentType = res.headers()["content-type"];
     expect(contentType).toContain("javascript");
+  });
+});
+
+// ============================================================
+// Test Suite 11: Pagination API
+// ============================================================
+test.describe("Pagination API", () => {
+  test("should return paginated results with correct structure", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/files?page=1&pageSize=5`);
+    expect(res.status()).toBe(200);
+
+    const data = await res.json();
+    expect(data.page).toBe(1);
+    expect(data.pageSize).toBe(5);
+    expect(data.files.length).toBeLessThanOrEqual(5);
+    expect(data.total).toBeGreaterThanOrEqual(0);
+    expect(data.totalPages).toBe(Math.max(1, Math.ceil(data.total / 5)));
+  });
+
+  test("should return different results for different pages", async ({ request }) => {
+    // Get page 1 with small page size
+    const res1 = await request.get(`${BASE_URL}/api/files?page=1&pageSize=2`);
+    const data1 = await res1.json();
+
+    if (data1.total <= 2) {
+      // Not enough files to test multi-page, skip
+      return;
+    }
+
+    // Get page 2
+    const res2 = await request.get(`${BASE_URL}/api/files?page=2&pageSize=2`);
+    const data2 = await res2.json();
+
+    expect(data2.page).toBe(2);
+    expect(data2.files.length).toBeGreaterThan(0);
+
+    // Files on page 1 and page 2 should be different
+    const page1Ids = data1.files.map((f) => f.fileId);
+    const page2Ids = data2.files.map((f) => f.fileId);
+    const overlap = page1Ids.filter((id) => page2Ids.includes(id));
+    expect(overlap.length).toBe(0);
+  });
+
+  test("should respect pageSize parameter", async ({ request }) => {
+    const res10 = await request.get(`${BASE_URL}/api/files?page=1&pageSize=10`);
+    const data10 = await res10.json();
+    expect(data10.pageSize).toBe(10);
+    expect(data10.files.length).toBeLessThanOrEqual(10);
+
+    const res100 = await request.get(`${BASE_URL}/api/files?page=1&pageSize=100`);
+    const data100 = await res100.json();
+    expect(data100.pageSize).toBe(100);
+    expect(data100.files.length).toBeLessThanOrEqual(100);
+  });
+
+  test("should clamp pageSize to max 100", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/files?page=1&pageSize=999`);
+    const data = await res.json();
+    expect(data.pageSize).toBe(100);
+  });
+
+  test("should default to page 1 and pageSize 20", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/files`);
+    const data = await res.json();
+    expect(data.page).toBe(1);
+    expect(data.pageSize).toBe(20);
+  });
+
+  test("should handle page beyond total pages gracefully", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/files?page=9999&pageSize=10`);
+    const data = await res.json();
+    // Should clamp to last page
+    expect(data.page).toBeLessThanOrEqual(data.totalPages);
+  });
+});
+
+// ============================================================
+// Test Suite 12: Search API
+// ============================================================
+test.describe("Search API", () => {
+  test("should filter files by search keyword", async ({ request }) => {
+    // Search for "test" which should match test files
+    const res = await request.get(`${BASE_URL}/api/files?search=test`);
+    expect(res.status()).toBe(200);
+
+    const data = await res.json();
+    // All returned files should contain "test" in their name
+    for (const file of data.files) {
+      expect(file.fileName.toLowerCase()).toContain("test");
+    }
+  });
+
+  test("should return empty results for non-matching search", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/files?search=zzz_nonexistent_xyz_12345`);
+    expect(res.status()).toBe(200);
+
+    const data = await res.json();
+    expect(data.files.length).toBe(0);
+    expect(data.total).toBe(0);
+  });
+
+  test("should be case-insensitive", async ({ request }) => {
+    const resLower = await request.get(`${BASE_URL}/api/files?search=test`);
+    const dataLower = await resLower.json();
+
+    const resUpper = await request.get(`${BASE_URL}/api/files?search=TEST`);
+    const dataUpper = await resUpper.json();
+
+    expect(dataLower.total).toBe(dataUpper.total);
+  });
+
+  test("should work with pagination combined", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/files?search=test&page=1&pageSize=2`);
+    expect(res.status()).toBe(200);
+
+    const data = await res.json();
+    expect(data.files.length).toBeLessThanOrEqual(2);
+    expect(data.page).toBe(1);
+    expect(data.pageSize).toBe(2);
+  });
+});
+
+// ============================================================
+// Test Suite 13: Pagination UI
+// ============================================================
+test.describe("Pagination UI", () => {
+  test("should show pagination controls on main page", async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState("networkidle");
+
+    await page.waitForFunction(() => {
+      const loading = document.getElementById("fileListLoading");
+      return loading && loading.style.display === "none";
+    }, { timeout: 15000 });
+
+    // Search box should be visible
+    const searchInput = page.locator("#searchInput");
+    await expect(searchInput).toBeVisible();
+
+    // Page size selector should exist
+    const pageSizeSelect = page.locator("#pageSizeSelect");
+    await expect(pageSizeSelect).toBeVisible();
+  });
+
+  test("should filter file list when searching", async ({ page }) => {
+    test.setTimeout(30000);
+
+    await page.goto(BASE_URL);
+    await page.waitForLoadState("networkidle");
+
+    await page.waitForFunction(() => {
+      const loading = document.getElementById("fileListLoading");
+      return loading && loading.style.display === "none";
+    }, { timeout: 15000 });
+
+    // Type a search term
+    const searchInput = page.locator("#searchInput");
+    await searchInput.fill("zzz_nonexistent_xyz");
+
+    // Wait for debounce + API call
+    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      const loading = document.getElementById("fileListLoading");
+      return loading && loading.style.display === "none";
+    }, { timeout: 10000 });
+
+    // Should show empty state
+    const emptyState = page.locator("#emptyState");
+    await expect(emptyState).toBeVisible();
+    await expect(emptyState).toContainText("没有找到");
+  });
+
+  test("should restore file list when clearing search", async ({ page }) => {
+    test.setTimeout(30000);
+
+    await page.goto(BASE_URL);
+    await page.waitForLoadState("networkidle");
+
+    await page.waitForFunction(() => {
+      const loading = document.getElementById("fileListLoading");
+      return loading && loading.style.display === "none";
+    }, { timeout: 15000 });
+
+    const searchInput = page.locator("#searchInput");
+
+    // Search for something that doesn't exist
+    await searchInput.fill("zzz_nonexistent_xyz");
+    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      const loading = document.getElementById("fileListLoading");
+      return loading && loading.style.display === "none";
+    }, { timeout: 10000 });
+
+    // Clear search
+    await searchInput.fill("");
+    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      const loading = document.getElementById("fileListLoading");
+      return loading && loading.style.display === "none";
+    }, { timeout: 10000 });
+
+    // File table should be visible again (if there are files)
+    const fileTable = page.locator("#fileTable");
+    const emptyState = page.locator("#emptyState");
+    const tableVisible = await fileTable.isVisible();
+    const emptyVisible = await emptyState.isVisible();
+    expect(tableVisible || emptyVisible).toBe(true);
+  });
+});
+
+// ============================================================
+// Test Suite 14: Admin Page
+// ============================================================
+test.describe("Admin Page", () => {
+  test("should load admin page with login form", async ({ page }) => {
+    await page.goto(`${BASE_URL}/admin.html`);
+    await page.waitForLoadState("networkidle");
+
+    // Check title
+    await expect(page).toHaveTitle("Lwt's Store - Admin");
+
+    // Login form should be visible
+    const passwordInput = page.locator("#adminPassword");
+    await expect(passwordInput).toBeVisible();
+
+    const loginBtn = page.locator("#loginBtn");
+    await expect(loginBtn).toBeVisible();
+    await expect(loginBtn).toHaveText("登录");
+  });
+
+  test("should reject wrong password", async ({ page }) => {
+    await page.goto(`${BASE_URL}/admin.html`);
+    await page.waitForLoadState("networkidle");
+
+    const passwordInput = page.locator("#adminPassword");
+    await passwordInput.fill("wrong_password_12345");
+
+    const loginBtn = page.locator("#loginBtn");
+    await loginBtn.click();
+
+    // Should show error message
+    const loginError = page.locator("#loginError");
+    await expect(loginError).toBeVisible({ timeout: 10000 });
+    await expect(loginError).toContainText("密码错误");
+
+    // Admin panel should NOT be visible
+    const adminPanel = page.locator("#adminPanel");
+    await expect(adminPanel).not.toBeVisible();
+  });
+
+  test("should have back to home link", async ({ page }) => {
+    await page.goto(`${BASE_URL}/admin.html`);
+    await page.waitForLoadState("networkidle");
+
+    const backLink = page.locator("a.admin-link");
+    await expect(backLink).toBeVisible();
+    await expect(backLink).toContainText("返回首页");
+
+    const href = await backLink.getAttribute("href");
+    expect(href).toBe("/");
+  });
+
+  test("should have admin link in main page footer", async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState("networkidle");
+
+    const adminLink = page.locator("footer a.admin-link");
+    await expect(adminLink).toBeVisible();
+    await expect(adminLink).toContainText("管理");
+
+    const href = await adminLink.getAttribute("href");
+    expect(href).toBe("/admin.html");
+  });
+});
+
+// ============================================================
+// Test Suite 15: Admin Delete API
+// ============================================================
+test.describe("Admin Delete API", () => {
+  test("should reject delete without password", async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: "some-id" },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test("should reject delete with wrong password", async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: "some-id", password: "wrong_password" },
+    });
+    expect(res.status()).toBe(401);
+    const data = await res.json();
+    expect(data.error).toContain("Unauthorized");
   });
 });
