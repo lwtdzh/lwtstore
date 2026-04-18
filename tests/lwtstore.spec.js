@@ -1160,3 +1160,70 @@ test.describe("Admin Delete Full Flow", () => {
     expect(res.status()).toBe(404);
   });
 });
+
+// ============================================================
+// Test Suite: Upload Speed Indicator
+// ============================================================
+test.describe("Upload Speed Indicator", () => {
+  const ADMIN_PWD = "438700qwe";
+  const FILE_SIZE = 512 * 1024; // 512KB - large enough to show speed
+  let testFileId;
+
+  test("should display speed and ETA during file upload", async ({ page }) => {
+    test.setTimeout(60000);
+
+    await page.goto(BASE_URL);
+
+    // Create a test file buffer in the browser
+    const fileChooserPromise = page.waitForEvent("filechooser");
+    await page.click("#uploadArea");
+    const fileChooser = await fileChooserPromise;
+
+    // Create a temp file for upload
+    const tmpDir = require("os").tmpdir();
+    const tmpFile = path.join(tmpDir, `speed-test-${Date.now()}.bin`);
+    const buf = crypto.randomBytes(FILE_SIZE);
+    fs.writeFileSync(tmpFile, buf);
+
+    await fileChooser.setFiles(tmpFile);
+
+    // Wait for upload progress to appear
+    await page.waitForSelector("#uploadProgress", { state: "visible", timeout: 10000 });
+
+    // Wait for speed indicator to show up (it appears after >=500ms of uploading)
+    const speedEl = page.locator("#uploadSpeed");
+    await expect(speedEl).toBeVisible({ timeout: 15000 });
+
+    // Verify speed text contains a speed unit
+    const speedText = await speedEl.textContent();
+    expect(speedText).toMatch(/⚡.*(B\/s|KB\/s|MB\/s)/);
+
+    // Wait for upload to complete
+    await page.waitForSelector("#uploadComplete", { state: "visible", timeout: 30000 });
+
+    // After completion, speed and ETA should be cleared
+    const speedAfter = await page.locator("#uploadSpeed").textContent();
+    const etaAfter = await page.locator("#uploadEta").textContent();
+    expect(speedAfter).toBe("");
+    expect(etaAfter).toBe("");
+
+    // Get the fileId from the download link for cleanup
+    const downloadLink = await page.locator("#downloadLinkInput").inputValue();
+    const fileIdMatch = downloadLink.match(/\/api\/download\/([^/?]+)/);
+    if (fileIdMatch) {
+      testFileId = fileIdMatch[1];
+    }
+
+    // Clean up temp file
+    fs.unlinkSync(tmpFile);
+  });
+
+  test.afterAll(async ({ request }) => {
+    // Delete the test file from the server
+    if (testFileId) {
+      await request.post(`${BASE_URL}/api/admin/delete`, {
+        data: { fileId: testFileId, password: ADMIN_PWD },
+      });
+    }
+  });
+});
