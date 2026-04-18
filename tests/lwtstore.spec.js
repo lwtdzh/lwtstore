@@ -1064,3 +1064,99 @@ test.describe("Admin Delete API", () => {
     expect(data.error).toContain("Unauthorized");
   });
 });
+
+// ============================================================
+// Test Suite: Admin Delete - Full Flow (upload → delete → verify gone)
+// ============================================================
+test.describe("Admin Delete Full Flow", () => {
+  const ADMIN_PWD = "438700qwe";
+  const FILE_SIZE = 256 * 1024; // 256KB (small, single part)
+  const FILE_NAME = `delete-test-${Date.now()}.bin`;
+  let testFileContent;
+  let uploadedFileId;
+  let downloadUrl;
+
+  test.beforeAll(async ({ request }) => {
+    // Upload a small test file via API
+    testFileContent = crypto.randomBytes(FILE_SIZE);
+    const fileHash = `${FILE_NAME}-${FILE_SIZE}-${Date.now()}`;
+
+    const initRes = await request.post(`${BASE_URL}/api/upload/init`, {
+      data: { fileName: FILE_NAME, fileSize: FILE_SIZE, fileHash },
+    });
+    expect(initRes.ok()).toBeTruthy();
+    const initData = await initRes.json();
+    uploadedFileId = initData.fileId;
+
+    // Upload single part
+    const partRes = await request.post(`${BASE_URL}/api/upload/part`, {
+      multipart: {
+        fileId: uploadedFileId,
+        partIndex: "0",
+        data: {
+          name: "chunk.bin",
+          mimeType: "application/octet-stream",
+          buffer: testFileContent,
+        },
+      },
+    });
+    expect(partRes.ok()).toBeTruthy();
+
+    // Complete upload
+    const completeRes = await request.post(`${BASE_URL}/api/upload/complete`, {
+      data: { fileId: uploadedFileId },
+    });
+    expect(completeRes.ok()).toBeTruthy();
+    const completeData = await completeRes.json();
+    downloadUrl = completeData.downloadUrl;
+  });
+
+  test("should download the file before deletion", async ({ request }) => {
+    // Verify the file is downloadable before we delete it
+    const res = await request.get(`${BASE_URL}${downloadUrl}`);
+    expect(res.status()).toBe(200);
+    const body = await res.body();
+    expect(body.length).toBe(FILE_SIZE);
+  });
+
+  test("should delete file via admin API with correct password", async ({ request }) => {
+    test.setTimeout(60000);
+
+    const res = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: uploadedFileId, password: ADMIN_PWD },
+    });
+    expect(res.ok()).toBeTruthy();
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.message).toContain(FILE_NAME);
+    expect(data.fileId).toBe(uploadedFileId);
+  });
+
+  test("should return 404 when downloading deleted file", async ({ request }) => {
+    // File metadata should be gone from D1
+    const res = await request.get(`${BASE_URL}${downloadUrl}`);
+    expect(res.status()).toBe(404);
+  });
+
+  test("should return 404 when checking status of deleted file", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/upload/status?fileId=${uploadedFileId}`);
+    expect(res.status()).toBe(404);
+  });
+
+  test("should not show deleted file in file list", async ({ request }) => {
+    // Search for the deleted file by name
+    const res = await request.get(`${BASE_URL}/api/files?search=${encodeURIComponent(FILE_NAME)}`);
+    expect(res.ok()).toBeTruthy();
+    const data = await res.json();
+    // The deleted file should not appear in results
+    const found = data.files.find((f) => f.fileId === uploadedFileId);
+    expect(found).toBeUndefined();
+  });
+
+  test("should return 404 when trying to delete same file again", async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: uploadedFileId, password: ADMIN_PWD },
+    });
+    expect(res.status()).toBe(404);
+  });
+});

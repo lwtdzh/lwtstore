@@ -225,6 +225,68 @@ export async function getFileSha(pat, repo, path) {
 }
 
 /**
+ * Delete a file from a GitHub repository using the Contents API
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @param {string} path - File path within the repo
+ * @param {string} sha - File blob SHA (required by GitHub API)
+ * @param {string} message - Commit message
+ */
+export async function deleteRepoFile(pat, repo, path, sha, message) {
+  const owner = await getOwner(pat);
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`,
+    {
+      method: "DELETE",
+      headers: { ...headers(pat), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: message || `Delete ${path}`,
+        sha,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Failed to delete file ${path} from ${repo}: ${res.status} ${err}`);
+  }
+
+  return await res.json();
+}
+
+/**
+ * Delete all parts of a file from GitHub
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @param {string} fileId - File ID
+ * @param {Array} parts - Array of part objects with index and sha
+ */
+export async function deleteFileParts(pat, repo, fileId, parts) {
+  for (const part of parts) {
+    const partPath = `${fileId}/part_${part.index.toString().padStart(4, "0")}`;
+
+    // If we have the SHA from D1, use it directly; otherwise fetch it
+    let sha = part.sha;
+    if (!sha) {
+      try {
+        sha = await getFileSha(pat, repo, partPath);
+      } catch (e) {
+        // Part may already be deleted or not exist, skip
+        continue;
+      }
+    }
+
+    try {
+      await deleteRepoFile(pat, repo, partPath, sha, `Delete part ${part.index} of ${fileId}`);
+    } catch (e) {
+      // Log but continue deleting other parts
+      console.error(`Warning: failed to delete ${partPath}: ${e.message}`);
+    }
+  }
+}
+
+/**
  * Fetch raw file content from GitHub
  * @param {string} pat - GitHub PAT
  * @param {string} repo - Repository name

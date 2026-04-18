@@ -1,7 +1,49 @@
 // GET /api/download/{fileId} - Download a file with HTTP Range support
+// Supports: multi-thread downloads, resume at disconnected position
 import { getFile } from "../../lib/db.js";
 import { fetchRawFile } from "../../lib/github.js";
 import { PART_SIZE } from "../../lib/constants.js";
+
+/**
+ * Build common response headers shared by GET / HEAD / OPTIONS.
+ * Includes Content-Length, Accept-Ranges, ETag, Last-Modified, CORS, etc.
+ */
+function buildCommonHeaders(fileId, fileName, totalSize, completedAt) {
+  return {
+    "Accept-Ranges": "bytes",
+    "Content-Length": totalSize.toString(),
+    "Content-Disposition": `attachment; filename="${encodeURIComponent(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    "Content-Type": "application/octet-stream",
+    "ETag": `"${fileId}"`,
+    "Last-Modified": completedAt
+      ? new Date(completedAt).toUTCString()
+      : new Date().toUTCString(),
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers": "Range, If-Range, If-None-Match, If-Modified-Since",
+    "Access-Control-Expose-Headers":
+      "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified",
+  };
+}
+
+/**
+ * Handle CORS preflight requests.
+ * Multi-thread download tools send OPTIONS before Range requests.
+ */
+export async function onRequestOptions() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Headers": "Range, If-Range, If-None-Match, If-Modified-Since",
+      "Access-Control-Expose-Headers":
+        "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified",
+      "Access-Control-Max-Age": "86400",
+    },
+  });
+}
 
 export async function onRequestGet(context) {
   try {
@@ -9,91 +51,87 @@ export async function onRequestGet(context) {
     const db = context.env.FILES;
     const pat = context.env.GITHUB_PRIVATE_KEY;
 
-    // Get file record
     const metadata = await getFile(db, fileId);
     if (!metadata) {
       return new Response("File not found", { status: 404 });
     }
-
     if (metadata.status !== "finished") {
       return new Response("File upload not yet completed", { status: 404 });
     }
 
     const totalSize = metadata.fileSize;
     const fileName = metadata.fileName;
+    const etag = `"${fileId}"`;
+    const lastModified = metadata.completedAt
+      ? new Date(metadata.completedAt).toUTCString()
+      : new Date().toUTCString();
+    const commonHeaders = buildCommonHeaders(fileId, fileName, totalSize, metadata.completedAt);
+
+    // --- Handle conditional requests (If-None-Match / If-Modified-Since) ---
+    const ifNoneMatch = context.request.headers.get("If-None-Match");
+    if (ifNoneMatch && ifNoneMatch.replace(/W\//, "") === etag) {
+      return new Response(null, { status: 304, headers: commonHeaders });
+    }
+
+    const ifModifiedSince = context.request.headers.get("If-Modified-Since");
+    if (ifModifiedSince && new Date(ifModifiedSince) >= new Date(lastModified)) {
+      return new Response(null, { status: 304, headers: commonHeaders });
+    }
+
+    // --- Parse Range header ---
     const rangeHeader = context.request.headers.get("Range");
-
-    // Common response headers
-    const commonHeaders = {
-      "Accept-Ranges": "bytes",
-      "Content-Disposition": `attachment; filename="${encodeURIComponent(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-      "Content-Type": "application/octet-stream",
-      "ETag": `"${fileId}"`,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition",
-    };
-
     let rangeStart = 0;
     let rangeEnd = totalSize - 1;
     let isPartial = false;
 
-    // Parse Range header
     if (rangeHeader) {
-      const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-      if (match) {
-        if (match[1] !== "") {
-          rangeStart = parseInt(match[1], 10);
-        }
-        if (match[2] !== "") {
-          rangeEnd = parseInt(match[2], 10);
+      // If-Range: only honour Range when the resource hasn't changed
+      const ifRange = context.request.headers.get("If-Range");
+      let rangeValid = true;
+      if (ifRange) {
+        // If-Range can be an ETag or a date
+        if (ifRange.startsWith('"') || ifRange.startsWith("W/")) {
+          rangeValid = ifRange.replace(/W\//, "") === etag;
         } else {
-          rangeEnd = totalSize - 1;
+          rangeValid = new Date(ifRange) >= new Date(lastModified);
         }
-
-        // Validate range
-        if (rangeStart >= totalSize || rangeEnd >= totalSize || rangeStart > rangeEnd) {
-          return new Response("Range Not Satisfiable", {
-            status: 416,
-            headers: {
-              "Content-Range": `bytes */${totalSize}`,
-              ...commonHeaders,
-            },
-          });
-        }
-
-        isPartial = true;
       }
+
+      if (rangeValid) {
+        const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
+        if (match) {
+          if (match[1] !== "") rangeStart = parseInt(match[1], 10);
+          if (match[2] !== "") rangeEnd = parseInt(match[2], 10);
+          else rangeEnd = totalSize - 1;
+
+          if (rangeStart >= totalSize || rangeEnd >= totalSize || rangeStart > rangeEnd) {
+            return new Response("Range Not Satisfiable", {
+              status: 416,
+              headers: { "Content-Range": `bytes */${totalSize}`, ...commonHeaders },
+            });
+          }
+          isPartial = true;
+        }
+      }
+      // If rangeValid is false, ignore Range and serve full content (per RFC 7233)
     }
 
     const contentLength = rangeEnd - rangeStart + 1;
 
-    // Determine which parts we need to fetch
+    // Determine which GitHub parts we need
     const startPartIndex = Math.floor(rangeStart / PART_SIZE);
     const endPartIndex = Math.floor(rangeEnd / PART_SIZE);
 
-    // Build a readable stream that assembles parts
-    const { readable, writable } = new TransformStream();
+    // Use FixedLengthStream so Cloudflare preserves Content-Length instead of chunked encoding.
+    // This is critical for browsers to show file size and for download managers to support resume.
+    const { readable, writable } = new FixedLengthStream(contentLength);
     const writer = writable.getWriter();
 
-    // Start assembling parts in the background
     const assemblePromise = assembleParts(
-      writer,
-      pat,
-      metadata,
-      startPartIndex,
-      endPartIndex,
-      rangeStart,
-      rangeEnd
+      writer, pat, metadata, startPartIndex, endPartIndex, rangeStart, rangeEnd
     );
-
-    // Don't await - let it stream
     assemblePromise.catch(async (err) => {
-      try {
-        await writer.abort(err);
-      } catch (e) {
-        // Writer may already be closed
-      }
+      try { await writer.abort(err); } catch (_) { /* already closed */ }
     });
 
     const responseHeaders = {
@@ -103,22 +141,19 @@ export async function onRequestGet(context) {
 
     if (isPartial) {
       responseHeaders["Content-Range"] = `bytes ${rangeStart}-${rangeEnd}/${totalSize}`;
-      return new Response(readable, {
-        status: 206,
-        headers: responseHeaders,
-      });
+      return new Response(readable, { status: 206, headers: responseHeaders });
     }
 
-    return new Response(readable, {
-      status: 200,
-      headers: responseHeaders,
-    });
+    return new Response(readable, { status: 200, headers: responseHeaders });
   } catch (err) {
     return new Response(`Download error: ${err.message}`, { status: 500 });
   }
 }
 
-// Also handle HEAD requests for download managers
+/**
+ * HEAD handler — download managers / browsers probe file size here.
+ * Returns all the same headers as GET but with no body.
+ */
 export async function onRequestHead(context) {
   try {
     const fileId = context.params.fileId;
@@ -131,15 +166,9 @@ export async function onRequestHead(context) {
 
     return new Response(null, {
       status: 200,
-      headers: {
-        "Accept-Ranges": "bytes",
-        "Content-Length": metadata.fileSize.toString(),
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(metadata.fileName)}"; filename*=UTF-8''${encodeURIComponent(metadata.fileName)}`,
-        "Content-Type": "application/octet-stream",
-        "ETag": `"${fileId}"`,
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition",
-      },
+      headers: buildCommonHeaders(
+        fileId, metadata.fileName, metadata.fileSize, metadata.completedAt
+      ),
     });
   } catch (err) {
     return new Response(null, { status: 500 });
