@@ -159,6 +159,39 @@ export async function setFile(db, fileId, data) {
 }
 
 /**
+ * Update a single part's status and SHA in D1.
+ * Much faster than setFile() which replaces all parts.
+ * @param {D1Database} db - D1 database binding
+ * @param {string} fileId - File ID
+ * @param {number} partIndex - Part index
+ * @param {string} status - New status (e.g., "done")
+ * @param {string|null} sha - Git blob SHA
+ */
+export async function updatePart(db, fileId, partIndex, status, sha) {
+  await ensureTables(db);
+
+  await db.prepare(
+    "UPDATE parts SET status = ?, sha = ? WHERE fileId = ? AND partIndex = ?"
+  ).bind(status, sha || null, fileId, partIndex).run();
+}
+
+/**
+ * Get the list of uploaded (done) part indices for a file.
+ * @param {D1Database} db - D1 database binding
+ * @param {string} fileId - File ID
+ * @returns {number[]} - Array of uploaded part indices
+ */
+export async function getUploadedParts(db, fileId) {
+  await ensureTables(db);
+
+  const result = await db.prepare(
+    "SELECT partIndex FROM parts WHERE fileId = ? AND status = 'done' ORDER BY partIndex ASC"
+  ).bind(fileId).all();
+
+  return (result.results || []).map((r) => r.partIndex);
+}
+
+/**
  * Delete a file record and its parts from D1.
  * @param {D1Database} db - D1 database binding
  * @param {string} fileId - File ID

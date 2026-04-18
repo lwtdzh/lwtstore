@@ -190,21 +190,33 @@ async function startUpload(file) {
       const end = Math.min(start + PART_SIZE, file.size);
       const chunk = file.slice(start, end);
 
-      // Upload with retry
-      let retries = 3;
+      // Upload with retry (generous timeout for large parts)
+      let retries = 5;
       let success = false;
 
       while (retries > 0 && !success) {
+        if (uploadCancelled) {
+          uploadStatus.textContent = "已取消";
+          return;
+        }
+
         try {
           const formData = new FormData();
           formData.append("fileId", fileId);
           formData.append("partIndex", i.toString());
           formData.append("data", chunk);
 
+          // Use AbortController with 120s timeout for each part upload
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 120000);
+
           const partRes = await fetch("/api/upload/part", {
             method: "POST",
             body: formData,
+            signal: controller.signal,
           });
+
+          clearTimeout(timeoutId);
 
           if (!partRes.ok) {
             const err = await partRes.json();
@@ -216,14 +228,17 @@ async function startUpload(file) {
           updateProgress(completedBytes, file.size);
         } catch (err) {
           retries--;
+          const errorMsg = err.name === "AbortError" ? "请求超时" : err.message;
           if (retries === 0) {
-            uploadStatus.textContent = `分片 ${i + 1} 上传失败，请刷新页面重试`;
-            showToast(`上传失败: ${err.message}`);
+            uploadStatus.textContent = `分片 ${i + 1} 上传失败: ${errorMsg}`;
+            showToast(`上传失败: ${errorMsg}，请重新选择同一文件以恢复上传`);
+            cancelBtn.style.display = "none";
             return;
           }
-          // Wait before retry
-          await new Promise((r) => setTimeout(r, 2000));
-          uploadStatus.textContent = `重试分片 ${i + 1}... (剩余 ${retries} 次)`;
+          // Exponential backoff: 3s, 6s, 12s, 24s
+          const backoffMs = 3000 * Math.pow(2, 4 - retries);
+          uploadStatus.textContent = `分片 ${i + 1} 失败(${errorMsg})，${Math.round(backoffMs / 1000)}秒后重试 (剩余 ${retries} 次)...`;
+          await new Promise((r) => setTimeout(r, backoffMs));
         }
       }
     }

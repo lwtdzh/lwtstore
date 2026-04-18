@@ -1,5 +1,5 @@
 // POST /api/upload/part - Upload a single file part
-import { getFile, setFile } from "../../lib/db.js";
+import { getFile, updatePart, getUploadedParts } from "../../lib/db.js";
 import { uploadFile } from "../../lib/github.js";
 
 export async function onRequestPost(context) {
@@ -62,18 +62,10 @@ export async function onRequestPost(context) {
       `Upload part ${partIndex} of ${metadata.fileName}`
     );
 
-    // Update metadata
-    metadata.parts[partIndex] = {
-      ...metadata.parts[partIndex],
-      status: "done",
-      sha: result.sha,
-    };
+    // Update only this single part (much faster than rewriting all parts)
+    await updatePart(db, fileId, partIndex, "done", result.sha);
 
-    await setFile(db, fileId, metadata);
-
-    const uploadedParts = metadata.parts
-      .filter((p) => p.status === "done")
-      .map((p) => p.index);
+    const uploadedParts = await getUploadedParts(db, fileId);
 
     return jsonResponse({
       success: true,
