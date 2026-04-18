@@ -141,8 +141,26 @@ header h1 {
 .progress-details {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 0.85rem;
   color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.progress-details-row2 {
+  margin-top: 2px;
+}
+
+.upload-speed {
+  font-weight: 600;
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.upload-eta {
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .upload-status {
@@ -823,6 +841,14 @@ footer {
 
   .progress-details {
     font-size: 0.75rem;
+  }
+
+  .upload-speed {
+    font-size: 0.75rem;
+  }
+
+  .upload-eta {
+    font-size: 0.7rem;
   }
 
   .upload-complete {

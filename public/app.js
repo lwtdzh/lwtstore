@@ -13,6 +13,8 @@ const progressFill = document.getElementById("progressFill");
 const uploadedSizeEl = document.getElementById("uploadedSize");
 const totalSizeEl = document.getElementById("totalSize");
 const uploadStatus = document.getElementById("uploadStatus");
+const uploadSpeedEl = document.getElementById("uploadSpeed");
+const uploadEtaEl = document.getElementById("uploadEta");
 const cancelBtn = document.getElementById("cancelBtn");
 const uploadComplete = document.getElementById("uploadComplete");
 const downloadLinkInput = document.getElementById("downloadLinkInput");
@@ -33,6 +35,15 @@ const pageNumbers = document.getElementById("pageNumbers");
 
 let currentUpload = null; // Track current upload state
 let uploadCancelled = false;
+
+// Speed tracking state
+let speedTracker = {
+  startTime: 0,
+  startBytes: 0,
+  lastTime: 0,
+  lastBytes: 0,
+  smoothedSpeed: 0,
+};
 
 // Pagination state
 let currentPage = 1;
@@ -121,6 +132,7 @@ async function startUpload(file) {
   uploadFileName.textContent = file.name;
   totalSizeEl.textContent = formatSize(file.size);
   uploadStatus.textContent = "初始化中...";
+  resetSpeedTracker();
   updateProgress(0, file.size);
 
   try {
@@ -454,11 +466,80 @@ async function loadFileList() {
 
 // ==================== UI Helpers ====================
 
+function resetSpeedTracker() {
+  const now = Date.now();
+  speedTracker = {
+    startTime: now,
+    startBytes: 0,
+    lastTime: now,
+    lastBytes: 0,
+    smoothedSpeed: 0,
+  };
+  if (uploadSpeedEl) uploadSpeedEl.textContent = "";
+  if (uploadEtaEl) uploadEtaEl.textContent = "";
+}
+
+function formatSpeed(bytesPerSecond) {
+  if (bytesPerSecond <= 0) return "0 B/s";
+  if (bytesPerSecond < 1024) return `${bytesPerSecond.toFixed(0)} B/s`;
+  if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSecond / (1024 * 1024)).toFixed(2)} MB/s`;
+}
+
+function formatEta(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `剩余 ${Math.ceil(seconds)} 秒`;
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.ceil(seconds % 60);
+    return `剩余 ${minutes} 分 ${secs} 秒`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.ceil((seconds % 3600) / 60);
+  return `剩余 ${hours} 时 ${minutes} 分`;
+}
+
 function updateProgress(loaded, total) {
   const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
   progressText.textContent = `${percent}%`;
   progressFill.style.width = `${percent}%`;
   uploadedSizeEl.textContent = formatSize(loaded);
+
+  // Calculate upload speed
+  const now = Date.now();
+  const elapsedSinceLastMs = now - speedTracker.lastTime;
+
+  if (loaded > 0 && elapsedSinceLastMs >= 500) {
+    const bytesDelta = loaded - speedTracker.lastBytes;
+    const instantSpeed = (bytesDelta / elapsedSinceLastMs) * 1000;
+
+    // Exponential moving average for smooth display (alpha = 0.3)
+    if (speedTracker.smoothedSpeed === 0) {
+      speedTracker.smoothedSpeed = instantSpeed;
+    } else {
+      speedTracker.smoothedSpeed = 0.3 * instantSpeed + 0.7 * speedTracker.smoothedSpeed;
+    }
+
+    speedTracker.lastTime = now;
+    speedTracker.lastBytes = loaded;
+
+    if (uploadSpeedEl) {
+      uploadSpeedEl.textContent = `⚡ ${formatSpeed(speedTracker.smoothedSpeed)}`;
+    }
+
+    // Calculate ETA based on smoothed speed
+    const remaining = total - loaded;
+    if (uploadEtaEl && speedTracker.smoothedSpeed > 0) {
+      const etaSeconds = remaining / speedTracker.smoothedSpeed;
+      uploadEtaEl.textContent = remaining > 0 ? formatEta(etaSeconds) : "";
+    }
+  }
+
+  // Clear speed/ETA when upload is complete
+  if (loaded >= total && total > 0) {
+    if (uploadSpeedEl) uploadSpeedEl.textContent = "";
+    if (uploadEtaEl) uploadEtaEl.textContent = "";
+  }
 }
 
 function resetUploadUI() {
@@ -468,6 +549,7 @@ function resetUploadUI() {
   fileInput.value = "";
   updateProgress(0, 0);
   uploadStatus.textContent = "";
+  resetSpeedTracker();
 }
 
 function showToast(message) {
