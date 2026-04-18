@@ -193,6 +193,7 @@ async function startUpload(file) {
       // Upload with retry (generous timeout for large parts)
       let retries = 5;
       let success = false;
+      const partSize = end - start;
 
       while (retries > 0 && !success) {
         if (uploadCancelled) {
@@ -206,29 +207,26 @@ async function startUpload(file) {
           formData.append("partIndex", i.toString());
           formData.append("data", chunk);
 
-          // Use AbortController with 120s timeout for each part upload
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 120000);
+          // Use XMLHttpRequest for real-time upload progress tracking
+          const partResult = await uploadPartWithProgress(
+            formData,
+            (partLoaded) => {
+              const totalLoaded = completedBytes + Math.min(partLoaded, partSize);
+              updateProgress(totalLoaded, file.size);
+            },
+            120000
+          );
 
-          const partRes = await fetch("/api/upload/part", {
-            method: "POST",
-            body: formData,
-            signal: controller.signal,
-          });
-
-          clearTimeout(timeoutId);
-
-          if (!partRes.ok) {
-            const err = await partRes.json();
-            throw new Error(err.error || `Failed to upload part ${i}`);
+          if (!partResult.success) {
+            throw new Error(partResult.error || `Failed to upload part ${i}`);
           }
 
           success = true;
-          completedBytes += (end - start);
+          completedBytes += partSize;
           updateProgress(completedBytes, file.size);
         } catch (err) {
           retries--;
-          const errorMsg = err.name === "AbortError" ? "请求超时" : err.message;
+          const errorMsg = err.message || "未知错误";
           if (retries === 0) {
             uploadStatus.textContent = `分片 ${i + 1} 上传失败: ${errorMsg}`;
             showToast(`上传失败: ${errorMsg}，请重新选择同一文件以恢复上传`);
@@ -477,6 +475,57 @@ async function loadFileList() {
   } catch (err) {
     fileListLoading.textContent = "加载失败，请刷新页面重试";
   }
+}
+
+// ==================== Upload Helper (XMLHttpRequest for progress) ====================
+
+/**
+ * Upload a part using XMLHttpRequest to get real-time upload progress.
+ * fetch() does not support upload progress events.
+ * @param {FormData} formData - Form data with fileId, partIndex, data
+ * @param {function} onProgress - Callback with bytes uploaded so far
+ * @param {number} timeoutMs - Timeout in milliseconds
+ * @returns {Promise<object>} - Parsed JSON response
+ */
+function uploadPartWithProgress(formData, onProgress, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload/part");
+    xhr.timeout = timeoutMs;
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(event.loaded);
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ success: true, ...data });
+        } else {
+          resolve({ success: false, error: data.error || `HTTP ${xhr.status}` });
+        }
+      } catch (parseError) {
+        resolve({ success: false, error: `Server error: HTTP ${xhr.status}` });
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("网络错误，请检查网络连接"));
+    });
+
+    xhr.addEventListener("timeout", () => {
+      reject(new Error("请求超时"));
+    });
+
+    xhr.addEventListener("abort", () => {
+      reject(new Error("上传已取消"));
+    });
+
+    xhr.send(formData);
+  });
 }
 
 // ==================== UI Helpers ====================
