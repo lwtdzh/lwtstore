@@ -1,5 +1,5 @@
 // POST /api/upload/complete - Finalize a file upload
-import { getFile, setFile, deleteHashMapping } from "../../lib/kv.js";
+import { getFile, setFile } from "../../lib/db.js";
 
 export async function onRequestPost(context) {
   try {
@@ -9,10 +9,10 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: "Missing required field: fileId" }, 400);
     }
 
-    const filesKv = context.env.FILES;
+    const db = context.env.FILES;
 
     // Get file record
-    const metadata = await getFile(filesKv, fileId);
+    const metadata = await getFile(db, fileId);
     if (!metadata) {
       return jsonResponse({ error: "File not found." }, 404);
     }
@@ -37,12 +37,9 @@ export async function onRequestPost(context) {
     // Update file record status
     metadata.status = "finished";
     metadata.completedAt = new Date().toISOString();
-    await setFile(filesKv, fileId, metadata);
+    await setFile(db, fileId, metadata);
 
-    // Remove hash mapping (no longer needed for resume)
-    if (metadata.fileHash) {
-      await deleteHashMapping(filesKv, metadata.fileHash);
-    }
+    // Hash lookup uses status='uploading' filter, so no separate cleanup needed
 
     return jsonResponse({
       success: true,

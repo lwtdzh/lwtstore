@@ -480,6 +480,27 @@ footer {
   color: var(--primary);
 }
 
+/* Admin button in header */
+.btn-admin {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 8px 20px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.btn-admin:hover {
+  background: var(--bg);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
 /* Admin Page Styles */
 .admin-login {
   max-width: 400px;
@@ -585,20 +606,60 @@ footer {
 /* Responsive */
 @media (max-width: 640px) {
   .container {
-    padding: 20px 16px;
+    padding: 16px 12px;
   }
 
   header h1 {
-    font-size: 1.8rem;
+    font-size: 1.6rem;
+  }
+
+  .subtitle {
+    font-size: 0.95rem;
+  }
+
+  .btn-admin {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    margin-top: 8px;
   }
 
   .upload-area {
-    padding: 40px 20px;
+    padding: 32px 16px;
   }
 
+  .upload-icon {
+    font-size: 2rem;
+    margin-bottom: 8px;
+  }
+
+  .upload-area p {
+    font-size: 0.9rem;
+  }
+
+  /* Hide date column on mobile */
   .file-table th:nth-child(3),
   .file-table td:nth-child(3) {
     display: none;
+  }
+
+  /* Smaller table padding on mobile */
+  .file-table th {
+    padding: 8px 10px;
+    font-size: 0.75rem;
+  }
+
+  .file-table td {
+    padding: 10px;
+    font-size: 0.8rem;
+  }
+
+  .file-name-cell {
+    max-width: 140px;
+    font-size: 0.8rem;
+  }
+
+  .file-size-cell {
+    font-size: 0.75rem;
   }
 
   .download-link-box {
@@ -607,12 +668,24 @@ footer {
 
   .file-actions {
     flex-direction: column;
+    gap: 4px;
+  }
+
+  .btn-download,
+  .btn-delete,
+  .btn-copy-small {
+    padding: 5px 10px;
+    font-size: 0.75rem;
   }
 
   .file-list-header {
     flex-direction: column;
     align-items: flex-start;
-    gap: 12px;
+    gap: 10px;
+  }
+
+  .file-list-header h2 {
+    font-size: 1.1rem;
   }
 
   .search-box input {
@@ -622,5 +695,132 @@ footer {
   .pagination {
     flex-direction: column;
     align-items: flex-start;
+    padding: 10px 12px;
+    gap: 6px;
+  }
+
+  .pagination-info {
+    font-size: 0.75rem;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .pagination-controls {
+    gap: 3px;
+    flex-wrap: wrap;
+  }
+
+  .btn-page {
+    padding: 5px 8px;
+    font-size: 0.7rem;
+  }
+
+  .btn-page-num {
+    padding: 3px 8px;
+    font-size: 0.7rem;
+    min-width: 28px;
+  }
+
+  /* Admin login */
+  .admin-login {
+    padding: 24px 16px;
+  }
+
+  .admin-login h2 {
+    font-size: 1.2rem;
+    margin-bottom: 16px;
+  }
+
+  .admin-login input {
+    font-size: 0.9rem;
+    padding: 8px 12px;
+  }
+
+  /* Modal */
+  .modal {
+    padding: 20px 16px;
+    width: 95%;
+  }
+
+  .modal h3 {
+    font-size: 1rem;
+  }
+
+  .modal p {
+    font-size: 0.85rem;
+  }
+
+  .modal-actions {
+    gap: 8px;
+  }
+
+  .modal-actions .btn {
+    min-width: 80px;
+    padding: 8px 14px;
+    font-size: 0.8rem;
+  }
+
+  /* Toast */
+  .toast {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    text-align: center;
+    font-size: 0.85rem;
+  }
+
+  /* Upload progress */
+  .upload-progress {
+    padding: 16px;
+  }
+
+  .progress-info {
+    margin-bottom: 8px;
+  }
+
+  .file-name {
+    font-size: 0.85rem;
+    max-width: 60%;
+  }
+
+  .progress-details {
+    font-size: 0.75rem;
+  }
+
+  .upload-complete {
+    padding: 24px 16px;
+  }
+
+  .upload-complete p {
+    font-size: 1rem;
+  }
+
+  .file-list-section h2 {
+    font-size: 1.2rem;
+  }
+
+  .file-list-section {
+    margin-bottom: 24px;
+  }
+
+  .upload-section {
+    margin-bottom: 24px;
+  }
+}
+
+/* Extra small screens (< 380px) */
+@media (max-width: 380px) {
+  header h1 {
+    font-size: 1.3rem;
+  }
+
+  .file-name-cell {
+    max-width: 100px;
+  }
+
+  /* Hide size column too on very small screens */
+  .file-table th:nth-child(2),
+  .file-table td:nth-child(2) {
+    display: none;
   }
 }

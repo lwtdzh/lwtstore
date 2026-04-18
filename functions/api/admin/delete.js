@@ -1,5 +1,5 @@
 // POST /api/admin/delete - Delete a file (admin only, password protected)
-import { getFile, deleteFile } from "../../lib/kv.js";
+import { getFile, deleteFile } from "../../lib/db.js";
 
 export async function onRequestPost(context) {
   try {
@@ -9,22 +9,22 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: "Missing required fields: fileId, password" }, 400);
     }
 
-    // Verify admin password
-    const adminPwd = context.env.ADMIN_PWD;
-    if (!adminPwd || password !== adminPwd) {
+    // Verify admin password (trim to handle env variable whitespace)
+    const adminPwd = (context.env.ADMIN_PWD || "").trim();
+    if (!adminPwd || password.trim() !== adminPwd) {
       return jsonResponse({ error: "Unauthorized: invalid password" }, 401);
     }
 
-    const filesKv = context.env.FILES;
+    const db = context.env.FILES;
 
     // Check file exists
-    const file = await getFile(filesKv, fileId);
+    const file = await getFile(db, fileId);
     if (!file) {
       return jsonResponse({ error: "File not found" }, 404);
     }
 
-    // Delete from KV
-    await deleteFile(filesKv, fileId);
+    // Delete from D1
+    await deleteFile(db, fileId);
 
     return jsonResponse({
       success: true,

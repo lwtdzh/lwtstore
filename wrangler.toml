@@ -1,11 +1,11 @@
 name = "lwt-store"
 compatibility_date = "2024-12-01"
 
-# FILES KV - each key is a fileId, value is the file's full metadata
-[[kv_namespaces]]
+# FILES D1 database - stores file metadata and parts info
+[[d1_databases]]
 binding = "FILES"
-id = "YOUR_FILES_KV_NAMESPACE_ID"
-preview_id = "YOUR_FILES_PREVIEW_KV_NAMESPACE_ID"
+database_name = "FILES"
+database_id = "YOUR_FILES_D1_DATABASE_ID"
 
 # METADATA KV - reserved for future use (e.g., site config, user settings)
 [[kv_namespaces]]

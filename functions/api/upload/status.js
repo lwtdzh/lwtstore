@@ -1,5 +1,5 @@
 // GET /api/upload/status?fileId={fileId} - Check upload status
-import { getFile } from "../../lib/kv.js";
+import { getFile } from "../../lib/db.js";
 
 export async function onRequestGet(context) {
   try {
@@ -10,9 +10,9 @@ export async function onRequestGet(context) {
       return jsonResponse({ error: "Missing required parameter: fileId" }, 400);
     }
 
-    const filesKv = context.env.FILES;
+    const db = context.env.FILES;
 
-    const metadata = await getFile(filesKv, fileId);
+    const metadata = await getFile(db, fileId);
     if (!metadata) {
       return jsonResponse({ error: "File not found." }, 404);
     }

@@ -1,6 +1,6 @@
 // POST /api/upload/init - Initialize a new file upload or resume an existing one
 import { PART_SIZE, MAX_FILE_SIZE } from "../../lib/constants.js";
-import { getFile, setFile, findByHash, setHashMapping } from "../../lib/kv.js";
+import { getFile, setFile, findByHash, ensureTables } from "../../lib/db.js";
 import { selectBucket } from "../../lib/github.js";
 
 export async function onRequestPost(context) {
@@ -16,11 +16,14 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: `File size exceeds maximum of 5GB` }, 400);
     }
 
-    const filesKv = context.env.FILES;
+    const db = context.env.FILES;
     const pat = context.env.GITHUB_PRIVATE_KEY;
 
+    // Ensure D1 tables exist
+    await ensureTables(db);
+
     // Check for existing upload with same hash (resume support)
-    const existing = await findByHash(filesKv, fileHash);
+    const existing = await findByHash(db, fileHash);
     if (existing) {
       const uploadedParts = existing.parts
         .filter((p) => p.status === "done")
@@ -74,10 +77,9 @@ export async function onRequestPost(context) {
       completedAt: null,
     };
 
-    await setFile(filesKv, fileId, fileRecord);
+    await setFile(db, fileId, fileRecord);
 
-    // Save hash->fileId mapping for fast resume detection
-    await setHashMapping(filesKv, fileHash, fileId);
+    // Hash is stored in the files table, no separate mapping needed
 
     return jsonResponse({
       fileId,
