@@ -480,10 +480,17 @@ footer {
   color: var(--primary);
 }
 
+/* Header top bar with tool links */
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
 /* Admin button in header */
 .btn-admin {
   display: inline-block;
-  margin-top: 12px;
   padding: 8px 20px;
   background: var(--card-bg);
   color: var(--text-secondary);
@@ -499,6 +506,26 @@ footer {
   background: var(--bg);
   color: var(--primary);
   border-color: var(--primary);
+}
+
+/* Tool link button */
+.btn-tool {
+  display: inline-block;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #f0f9ff, #e0f2fe);
+  color: var(--primary);
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.btn-tool:hover {
+  background: linear-gradient(135deg, #e0f2fe, #bae6fd);
+  border-color: var(--primary);
+  box-shadow: var(--shadow);
 }
 
 /* Admin Page Styles */
@@ -617,10 +644,21 @@ footer {
     font-size: 0.95rem;
   }
 
+  .header-top {
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+  }
+
   .btn-admin {
     padding: 6px 14px;
     font-size: 0.8rem;
-    margin-top: 8px;
+  }
+
+  .btn-tool {
+    padding: 6px 12px;
+    font-size: 0.75rem;
+    text-align: center;
   }
 
   .upload-area {
