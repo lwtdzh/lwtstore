@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 .aone_copilot/
 .idea/
+test-results/
