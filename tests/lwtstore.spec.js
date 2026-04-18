@@ -1166,46 +1166,50 @@ test.describe("Admin Delete Full Flow", () => {
 // ============================================================
 test.describe("Upload Speed Indicator", () => {
   const ADMIN_PWD = "438700qwe";
-  const FILE_SIZE = 512 * 1024; // 512KB - large enough to show speed
   let testFileId;
 
-  test("should display speed and ETA during file upload", async ({ page }) => {
-    test.setTimeout(60000);
+  test("should have speed and ETA elements in the upload progress UI", async ({ page }) => {
+    await page.goto(BASE_URL);
+
+    // Verify the speed and ETA elements exist in the DOM
+    const speedEl = page.locator("#uploadSpeed");
+    const etaEl = page.locator("#uploadEta");
+    await expect(speedEl).toBeAttached();
+    await expect(etaEl).toBeAttached();
+  });
+
+  test("should display speed during file upload and clear on completion", async ({ page }) => {
+    test.setTimeout(120000);
 
     await page.goto(BASE_URL);
 
-    // Create a test file buffer in the browser
+    // Create a 20MB test file (one full part — takes ~15s to upload, enough to show speed)
+    const tmpFile = path.join(require("os").tmpdir(), `speed-test-${Date.now()}.bin`);
+    const buf = crypto.randomBytes(20 * 1024 * 1024);
+    fs.writeFileSync(tmpFile, buf);
+
     const fileChooserPromise = page.waitForEvent("filechooser");
     await page.click("#uploadArea");
     const fileChooser = await fileChooserPromise;
-
-    // Create a temp file for upload
-    const tmpDir = require("os").tmpdir();
-    const tmpFile = path.join(tmpDir, `speed-test-${Date.now()}.bin`);
-    const buf = crypto.randomBytes(FILE_SIZE);
-    fs.writeFileSync(tmpFile, buf);
-
     await fileChooser.setFiles(tmpFile);
 
     // Wait for upload progress to appear
     await page.waitForSelector("#uploadProgress", { state: "visible", timeout: 10000 });
 
-    // Wait for speed indicator to show up (it appears after >=500ms of uploading)
+    // Poll for speed text to appear (it shows after >=500ms of data transfer)
     const speedEl = page.locator("#uploadSpeed");
-    await expect(speedEl).toBeVisible({ timeout: 15000 });
+    await expect(speedEl).toHaveText(/⚡/, { timeout: 30000 });
 
     // Verify speed text contains a speed unit
     const speedText = await speedEl.textContent();
     expect(speedText).toMatch(/⚡.*(B\/s|KB\/s|MB\/s)/);
 
     // Wait for upload to complete
-    await page.waitForSelector("#uploadComplete", { state: "visible", timeout: 30000 });
+    await page.waitForSelector("#uploadComplete", { state: "visible", timeout: 90000 });
 
     // After completion, speed and ETA should be cleared
-    const speedAfter = await page.locator("#uploadSpeed").textContent();
-    const etaAfter = await page.locator("#uploadEta").textContent();
-    expect(speedAfter).toBe("");
-    expect(etaAfter).toBe("");
+    await expect(page.locator("#uploadSpeed")).toHaveText("");
+    await expect(page.locator("#uploadEta")).toHaveText("");
 
     // Get the fileId from the download link for cleanup
     const downloadLink = await page.locator("#downloadLinkInput").inputValue();
