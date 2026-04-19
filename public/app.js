@@ -1,6 +1,6 @@
 // Lwt's Store - Client-side application logic
 
-const PART_SIZE = 20 * 1024 * 1024; // 20MB per part
+const PART_SIZE = 5 * 1024 * 1024; // 5MB per part (matches server-side, avoids Cloudflare 503)
 const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
 
 // DOM Elements

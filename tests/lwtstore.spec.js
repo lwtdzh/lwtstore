@@ -298,8 +298,8 @@ test.describe("Multi-part File Upload", () => {
 
   test.beforeAll(() => {
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    // Create a 25MB test file (will be split into 2 parts: 20MB + 5MB)
-    const result = createTestFile(tmpDir, "test-multipart.bin", 25 * 1024 * 1024);
+    // Create an 8MB test file (will be split into 2 parts: 5MB + 3MB)
+    const result = createTestFile(tmpDir, "test-multipart.bin", 8 * 1024 * 1024);
     testFilePath = result.filePath;
     testFileContent = result.buf;
   });
@@ -331,7 +331,7 @@ test.describe("Multi-part File Upload", () => {
     const { fileId, totalParts } = initData;
 
     // Step 2: Upload parts
-    const PART_SIZE = 20 * 1024 * 1024;
+    const PART_SIZE = 5 * 1024 * 1024;
     for (let i = 0; i < totalParts; i++) {
       const start = i * PART_SIZE;
       const end = Math.min(start + PART_SIZE, fileSize);
@@ -389,7 +389,7 @@ test.describe("Multi-part File Upload", () => {
 // Test Suite 5: Upload Resume (Simulated Disconnection)
 // ============================================================
 test.describe("Upload Resume After Disconnection", () => {
-  const RESUME_FILE_SIZE = 25 * 1024 * 1024; // 25MB = 2 parts (20MB + 5MB)
+  const RESUME_FILE_SIZE = 8 * 1024 * 1024; // 8MB = 2 parts (5MB + 3MB)
   let testFileContent;
 
   test.beforeAll(() => {
@@ -402,7 +402,7 @@ test.describe("Upload Resume After Disconnection", () => {
     const fileName = `test-resume-${Date.now()}.bin`;
     const fileSize = testFileContent.length;
     const fileHash = `${fileName}-${fileSize}-${Date.now()}`;
-    const PART_SIZE = 20 * 1024 * 1024;
+    const PART_SIZE = 5 * 1024 * 1024;
 
     // Step 1: Initialize upload
     const initRes = await request.post(`${BASE_URL}/api/upload/init`, {
@@ -1183,9 +1183,9 @@ test.describe("Upload Speed Indicator", () => {
 
     await page.goto(BASE_URL);
 
-    // Create a 20MB test file (one full part — takes ~15s to upload, enough to show speed)
+    // Create a 5MB test file (one full part — takes a few seconds to upload, enough to show speed)
     const tmpFile = path.join(require("os").tmpdir(), `speed-test-${Date.now()}.bin`);
-    const buf = crypto.randomBytes(20 * 1024 * 1024);
+    const buf = crypto.randomBytes(5 * 1024 * 1024);
     fs.writeFileSync(tmpFile, buf);
 
     const fileChooserPromise = page.waitForEvent("filechooser");
