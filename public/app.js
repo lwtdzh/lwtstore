@@ -1,6 +1,6 @@
 // Lwt's Store - Client-side application logic
 
-const PART_SIZE = 5 * 1024 * 1024; // 5MB per part (matches server-side, avoids Cloudflare 503)
+let PART_SIZE = 5 * 1024 * 1024; // 5MB default, overridden by server during upload init
 const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
 
 // DOM Elements
@@ -155,6 +155,11 @@ async function startUpload(file) {
 
     const initData = await initRes.json();
     const { fileId, totalParts, uploadedParts } = initData;
+
+    // Use server-provided PART_SIZE to ensure client/server consistency
+    if (initData.partSize) {
+      PART_SIZE = initData.partSize;
+    }
 
     // Save to localStorage for resume
     saveUploadState(fileHash, { fileId, fileName: file.name, fileSize: file.size });

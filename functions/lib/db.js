@@ -159,20 +159,27 @@ export async function setFile(db, fileId, data) {
 }
 
 /**
- * Update a single part's status and SHA in D1.
+ * Update a single part's status, SHA, and actual size in D1.
  * Much faster than setFile() which replaces all parts.
  * @param {D1Database} db - D1 database binding
  * @param {string} fileId - File ID
  * @param {number} partIndex - Part index
  * @param {string} status - New status (e.g., "done")
  * @param {string|null} sha - Git blob SHA
+ * @param {number|null} actualSize - Actual uploaded size in bytes (optional)
  */
-export async function updatePart(db, fileId, partIndex, status, sha) {
+export async function updatePart(db, fileId, partIndex, status, sha, actualSize = null) {
   await ensureTables(db);
 
-  await db.prepare(
-    "UPDATE parts SET status = ?, sha = ? WHERE fileId = ? AND partIndex = ?"
-  ).bind(status, sha || null, fileId, partIndex).run();
+  if (actualSize !== null) {
+    await db.prepare(
+      "UPDATE parts SET status = ?, sha = ?, size = ? WHERE fileId = ? AND partIndex = ?"
+    ).bind(status, sha || null, actualSize, fileId, partIndex).run();
+  } else {
+    await db.prepare(
+      "UPDATE parts SET status = ?, sha = ? WHERE fileId = ? AND partIndex = ?"
+    ).bind(status, sha || null, fileId, partIndex).run();
+  }
 }
 
 /**

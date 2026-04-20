@@ -1,5 +1,6 @@
 // POST /api/upload/complete - Finalize a file upload
 import { getFile, updateFileStatus } from "../../lib/db.js";
+import { getActualPartSizes } from "../../lib/github.js";
 
 export async function onRequestPost(context) {
   try {
@@ -32,6 +33,40 @@ export async function onRequestPost(context) {
         error: "Not all parts have been uploaded",
         pendingParts: pendingParts.map((p) => p.index),
       }, 400);
+    }
+
+    // Verify actual part sizes on GitHub match DB records.
+    // This catches silent corruption (e.g. truncated uploads, PART_SIZE
+    // changes mid-upload) before marking the file as "finished".
+    const pat = context.env.GITHUB_PRIVATE_KEY;
+    const actualSizes = await getActualPartSizes(pat, metadata.bucketRepo, fileId);
+
+    if (actualSizes.length !== metadata.parts.length) {
+      return jsonResponse({
+        error: `Part count mismatch: DB has ${metadata.parts.length} parts but GitHub has ${actualSizes.length}`,
+      }, 500);
+    }
+
+    const sizeMismatches = [];
+    let actualTotal = 0;
+    for (let i = 0; i < actualSizes.length; i++) {
+      actualTotal += actualSizes[i];
+      if (actualSizes[i] !== metadata.parts[i].size) {
+        sizeMismatches.push({
+          partIndex: i,
+          expected: metadata.parts[i].size,
+          actual: actualSizes[i],
+        });
+      }
+    }
+
+    if (sizeMismatches.length > 0) {
+      return jsonResponse({
+        error: "Part size mismatch detected — some parts may be corrupted",
+        mismatches: sizeMismatches,
+        expectedTotal: metadata.fileSize,
+        actualTotal,
+      }, 500);
     }
 
     // Update only the status column — avoids rewriting all parts rows

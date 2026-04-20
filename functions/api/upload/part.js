@@ -1,6 +1,7 @@
 // POST /api/upload/part - Upload a single file part
 import { getFile, updatePart, getUploadedParts } from "../../lib/db.js";
 import { uploadFile } from "../../lib/github.js";
+import { PART_SIZE } from "../../lib/constants.js";
 
 export async function onRequestPost(context) {
   try {
@@ -47,6 +48,23 @@ export async function onRequestPost(context) {
 
     // Read the blob data as ArrayBuffer then convert to Base64
     const arrayBuffer = await dataBlob.arrayBuffer();
+    const actualSize = arrayBuffer.byteLength;
+
+    // Validate part size matches expected size.
+    // Last part may be smaller; all others must equal PART_SIZE.
+    const isLastPart = partIndex === metadata.totalParts - 1;
+    const expectedSize = isLastPart
+      ? metadata.fileSize - partIndex * PART_SIZE
+      : PART_SIZE;
+
+    if (actualSize !== expectedSize) {
+      return jsonResponse({
+        error: `Part ${partIndex} size mismatch: expected ${expectedSize} bytes but received ${actualSize}`,
+        expected: expectedSize,
+        actual: actualSize,
+      }, 400);
+    }
+
     const uint8Array = new Uint8Array(arrayBuffer);
     const contentBase64 = uint8ArrayToBase64(uint8Array);
 
@@ -62,8 +80,8 @@ export async function onRequestPost(context) {
       `Upload part ${partIndex} of ${metadata.fileName}`
     );
 
-    // Update only this single part (much faster than rewriting all parts)
-    await updatePart(db, fileId, partIndex, "done", result.sha);
+    // Update part status, SHA, and actual size (ensures DB matches reality)
+    await updatePart(db, fileId, partIndex, "done", result.sha, actualSize);
 
     const uploadedParts = await getUploadedParts(db, fileId);
 
