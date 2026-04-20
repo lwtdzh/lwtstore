@@ -302,7 +302,7 @@ export async function deleteFileParts(pat, repo, fileId, parts) {
  * @param {number|null} rangeEnd - Optional byte range end (inclusive)
  * @returns {Response} - Fetch response (streamable)
  */
-export async function fetchRawFile(pat, repo, path, maxRetries = 3, rangeStart = null, rangeEnd = null) {
+export async function fetchRawFile(pat, repo, path, rangeStart = null, rangeEnd = null) {
   const owner = await getOwner(pat);
   const url = `${RAW_GITHUB}/${owner}/${repo}/main/${path}`;
 
@@ -318,33 +318,33 @@ export async function fetchRawFile(pat, repo, path, maxRetries = 3, rangeStart =
     requestHeaders["Range"] = rangeValue;
   }
 
-  let lastError;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  // Retry forever with exponential backoff capped at 30s.
+  // Only 4xx errors are non-retryable (client error / file not found).
+  let attempt = 0;
+  while (true) {
     try {
       const res = await fetch(url, { headers: requestHeaders });
 
       // 200 (full) or 206 (partial) are both success
       if (res.ok || res.status === 206) return res;
 
-      // Retry on server errors (5xx), fail immediately on client errors (4xx)
+      // 4xx = client error, not retryable (file doesn't exist, auth failed, etc.)
       if (res.status < 500) {
         throw new Error(`Failed to fetch raw file ${path} from ${repo}: ${res.status}`);
       }
 
-      lastError = new Error(`GitHub returned ${res.status} for ${path} (attempt ${attempt}/${maxRetries})`);
+      // 5xx = server error, retryable
+      attempt++;
     } catch (err) {
-      lastError = err;
+      // 4xx errors thrown above — don't retry
+      if (err.message.includes("Failed to fetch raw file")) throw err;
       // Network errors (timeout, DNS, etc.) are retryable
-      if (err.message.includes("Failed to fetch raw file")) throw err; // 4xx, don't retry
+      attempt++;
     }
 
-    if (attempt < maxRetries) {
-      // Exponential backoff: 500ms, 1000ms
-      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-    }
+    const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
   }
-
-  throw lastError;
 }
 
 /**

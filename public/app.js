@@ -195,12 +195,13 @@ async function startUpload(file) {
       const end = Math.min(start + PART_SIZE, file.size);
       const chunk = file.slice(start, end);
 
-      // Upload with retry (generous timeout for large parts)
-      let retries = 5;
+      // Upload with infinite retry until user cancels.
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped).
       let success = false;
+      let attempt = 0;
       const partSize = end - start;
 
-      while (retries > 0 && !success) {
+      while (!success) {
         if (uploadCancelled) {
           uploadStatus.textContent = "已取消";
           return;
@@ -227,20 +228,14 @@ async function startUpload(file) {
           }
 
           success = true;
+          attempt = 0;
           completedBytes += partSize;
           updateProgress(completedBytes, file.size);
         } catch (err) {
-          retries--;
+          attempt++;
           const errorMsg = err.message || "未知错误";
-          if (retries === 0) {
-            uploadStatus.textContent = `分片 ${i + 1} 上传失败: ${errorMsg}`;
-            showToast(`上传失败: ${errorMsg}，请重新选择同一文件以恢复上传`);
-            cancelBtn.style.display = "none";
-            return;
-          }
-          // Exponential backoff: 3s, 6s, 12s, 24s
-          const backoffMs = 3000 * Math.pow(2, 4 - retries);
-          uploadStatus.textContent = `分片 ${i + 1} 失败(${errorMsg})，${Math.round(backoffMs / 1000)}秒后重试 (剩余 ${retries} 次)...`;
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+          uploadStatus.textContent = `分片 ${i + 1} 失败(${errorMsg})，${Math.round(backoffMs / 1000)}秒后重试...`;
           await new Promise((r) => setTimeout(r, backoffMs));
         }
       }

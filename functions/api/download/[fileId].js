@@ -244,11 +244,40 @@ async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd, partOf
 
       const needsFullPart = localStart === 0 && localEnd === actualPartSize - 1;
 
-      // Fetch the part from GitHub
-      const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
+      // Fetch and stream this part with infinite retry.
+      // On any error (fetch failure, stream interruption), wait with
+      // exponential backoff (max 30s) and retry the entire part fetch.
+      // Never propagate errors to the browser — keep the stream alive.
+      await fetchAndStreamPart(
+        writer, pat, metadata.bucketRepo, partPath,
+        needsFullPart, localStart, localEnd
+      );
+    }
+
+    await writer.close();
+  } catch (err) {
+    try {
+      await writer.abort(err);
+    } catch (e) {
+      // Already closed
+    }
+    throw err;
+  }
+}
+
+/**
+ * Fetch a single part from GitHub and stream it to the writer.
+ * Retries forever on any error with exponential backoff capped at 30s.
+ * This ensures transient GitHub/network errors never kill the download.
+ */
+async function fetchAndStreamPart(writer, pat, repo, partPath, needsFullPart, localStart, localEnd) {
+  let attempt = 0;
+
+  while (true) {
+    try {
+      const response = await fetchRawFile(pat, repo, partPath);
 
       if (needsFullPart) {
-        // Stream the entire part directly
         const reader = response.body.getReader();
         try {
           while (true) {
@@ -260,7 +289,6 @@ async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd, partOf
           reader.releaseLock();
         }
       } else {
-        // Stream through the part, skipping/truncating as needed
         const reader = response.body.getReader();
         let position = 0;
         const targetLength = localEnd - localStart + 1;
@@ -286,16 +314,20 @@ async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd, partOf
           reader.releaseLock();
         }
       }
-    }
 
-    await writer.close();
-  } catch (err) {
-    try {
-      await writer.abort(err);
-    } catch (e) {
-      // Already closed
+      // Success — part fully streamed
+      return;
+    } catch (err) {
+      // Non-retryable errors (4xx from fetchRawFile) — must propagate
+      if (err.message && err.message.includes("Failed to fetch raw file")) {
+        throw err;
+      }
+
+      // Retryable error — wait with exponential backoff, then retry
+      attempt++;
+      const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
     }
-    throw err;
   }
 }
 
