@@ -80,17 +80,17 @@ export async function onRequestPost(context) {
 }
 
 /**
- * Convert Uint8Array to Base64 string
- * Works in Cloudflare Workers environment
+ * Convert Uint8Array to Base64 string.
+ * Uses a pre-allocated array and single btoa() call to avoid O(n²) string
+ * concatenation that was burning excessive CPU on 5MB parts.
  */
 function uint8ArrayToBase64(uint8Array) {
-  let binary = "";
-  const chunkSize = 8192;
-  for (let i = 0; i < uint8Array.length; i += chunkSize) {
-    const chunk = uint8Array.subarray(i, Math.min(i + chunkSize, uint8Array.length));
-    binary += String.fromCharCode.apply(null, chunk);
+  // Pre-allocate an array of characters, then join once — O(n) instead of O(n²)
+  const charCodes = new Array(uint8Array.length);
+  for (let i = 0; i < uint8Array.length; i++) {
+    charCodes[i] = String.fromCharCode(uint8Array[i]);
   }
-  return btoa(binary);
+  return btoa(charCodes.join(""));
 }
 
 function jsonResponse(data, status = 200) {

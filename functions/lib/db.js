@@ -261,6 +261,22 @@ export async function listFilesPaged(db, { page = 1, pageSize = 20, search = "" 
 }
 
 /**
+ * Update only the status and completedAt fields of a file record.
+ * Much cheaper than setFile() which deletes and re-inserts all parts.
+ * @param {D1Database} db - D1 database binding
+ * @param {string} fileId - File ID
+ * @param {string} status - New status (e.g., "finished")
+ * @param {string|null} completedAt - Completion timestamp (ISO string)
+ */
+export async function updateFileStatus(db, fileId, status, completedAt = null) {
+  await ensureTables(db);
+
+  await db.prepare(
+    "UPDATE files SET status = ?, completedAt = ? WHERE fileId = ?"
+  ).bind(status, completedAt, fileId).run();
+}
+
+/**
  * Find a file record by file hash (for resume detection).
  * Only matches files with status = 'uploading'.
  * @param {D1Database} db - D1 database binding

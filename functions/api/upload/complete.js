@@ -1,5 +1,5 @@
 // POST /api/upload/complete - Finalize a file upload
-import { getFile, setFile } from "../../lib/db.js";
+import { getFile, updateFileStatus } from "../../lib/db.js";
 
 export async function onRequestPost(context) {
   try {
@@ -34,10 +34,9 @@ export async function onRequestPost(context) {
       }, 400);
     }
 
-    // Update file record status
-    metadata.status = "finished";
-    metadata.completedAt = new Date().toISOString();
-    await setFile(db, fileId, metadata);
+    // Update only the status column — avoids rewriting all parts rows
+    const completedAt = new Date().toISOString();
+    await updateFileStatus(db, fileId, "finished", completedAt);
 
     // Hash lookup uses status='uploading' filter, so no separate cleanup needed
 

@@ -176,24 +176,20 @@ export async function onRequestHead(context) {
 }
 
 /**
- * Assemble file parts into a stream, handling byte ranges across parts
+ * Assemble file parts into a stream, handling byte ranges across parts.
+ * Uses streaming to avoid loading entire parts into memory, which would
+ * exceed Cloudflare Workers' memory limits on large files.
  */
 async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex, rangeStart, rangeEnd) {
   try {
     for (let i = startPartIndex; i <= endPartIndex; i++) {
       const partPath = `${metadata.fileId}/part_${i.toString().padStart(4, "0")}`;
-
-      // Fetch the part from GitHub
-      const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
-      const partData = new Uint8Array(await response.arrayBuffer());
-
-      // Calculate the slice of this part we need
+      const partSize = metadata.parts[i].size;
       const partGlobalStart = i * PART_SIZE;
-      const partGlobalEnd = partGlobalStart + metadata.parts[i].size - 1;
 
       // Determine local byte offsets within this part
       let localStart = 0;
-      let localEnd = metadata.parts[i].size - 1;
+      let localEnd = partSize - 1;
 
       if (i === startPartIndex) {
         localStart = rangeStart - partGlobalStart;
@@ -202,9 +198,22 @@ async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex
         localEnd = rangeEnd - partGlobalStart;
       }
 
-      // Write the relevant slice
-      const slice = partData.slice(localStart, localEnd + 1);
-      await writer.write(slice);
+      const needsFullPart = localStart === 0 && localEnd === partSize - 1;
+
+      // Fetch the part from GitHub
+      const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
+
+      if (needsFullPart) {
+        // Stream the entire part directly without buffering into memory
+        await streamBody(response.body, writer);
+      } else {
+        // Partial part needed (first or last part of a range request).
+        // We must buffer this single part to slice it, but only one part
+        // is ever buffered at a time (max 5MB), which is safe for Workers.
+        const partData = new Uint8Array(await response.arrayBuffer());
+        const slice = partData.slice(localStart, localEnd + 1);
+        await writer.write(slice);
+      }
     }
 
     await writer.close();
@@ -215,5 +224,22 @@ async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex
       // Already closed
     }
     throw err;
+  }
+}
+
+/**
+ * Pipe a ReadableStream body into a WritableStreamDefaultWriter
+ * chunk-by-chunk, keeping memory usage minimal.
+ */
+async function streamBody(body, writer) {
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      await writer.write(value);
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
