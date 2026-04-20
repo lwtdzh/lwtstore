@@ -58,7 +58,14 @@ export async function onRequestGet(context) {
       return new Response("File upload not yet completed", { status: 404 });
     }
 
-    const totalSize = metadata.fileSize;
+    // Get actual part sizes from GitHub first (DB sizes may be inaccurate
+    // if PART_SIZE was changed between upload sessions).
+    const actualSizes = await getActualPartSizes(pat, metadata.bucketRepo, fileId);
+    const partOffsets = buildPartOffsets(actualSizes);
+
+    // Use actual total size from GitHub rather than DB fileSize, which may
+    // be wrong if the upload used a different PART_SIZE than recorded.
+    const totalSize = partOffsets[actualSizes.length];
     const fileName = metadata.fileName;
     const etag = `"${fileId}"`;
     const lastModified = metadata.completedAt
@@ -117,11 +124,6 @@ export async function onRequestGet(context) {
 
     const contentLength = rangeEnd - rangeStart + 1;
 
-    // Get actual part sizes from GitHub (DB sizes may be inaccurate if
-    // PART_SIZE was changed between upload sessions).
-    const actualSizes = await getActualPartSizes(pat, metadata.bucketRepo, fileId);
-    const partOffsets = buildPartOffsets(actualSizes);
-
     // Use FixedLengthStream so Cloudflare preserves Content-Length instead of chunked encoding.
     // This is critical for browsers to show file size and for download managers to support resume.
     const { readable, writable } = new FixedLengthStream(contentLength);
@@ -158,16 +160,21 @@ export async function onRequestHead(context) {
   try {
     const fileId = context.params.fileId;
     const db = context.env.FILES;
+    const pat = context.env.GITHUB_PRIVATE_KEY;
 
     const metadata = await getFile(db, fileId);
     if (!metadata || metadata.status !== "finished") {
       return new Response(null, { status: 404 });
     }
 
+    // Use actual total size from GitHub (DB fileSize may be inaccurate)
+    const actualSizes = await getActualPartSizes(pat, metadata.bucketRepo, fileId);
+    const actualTotal = actualSizes.reduce((sum, s) => sum + s, 0);
+
     return new Response(null, {
       status: 200,
       headers: buildCommonHeaders(
-        fileId, metadata.fileName, metadata.fileSize, metadata.completedAt
+        fileId, metadata.fileName, actualTotal, metadata.completedAt
       ),
     });
   } catch (err) {
