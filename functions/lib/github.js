@@ -290,27 +290,41 @@ export async function deleteFileParts(pat, repo, fileId, parts) {
  * Fetch raw file content from GitHub with automatic retry.
  * GitHub raw CDN can occasionally return 5xx or time out, especially
  * when many parts are fetched in sequence (e.g. during range-resume downloads).
+ *
+ * Supports optional byte range via rangeStart/rangeEnd to avoid buffering
+ * large parts into memory when only a slice is needed.
+ *
  * @param {string} pat - GitHub PAT
  * @param {string} repo - Repository name
  * @param {string} path - File path
  * @param {number} maxRetries - Maximum retry attempts (default 3)
+ * @param {number|null} rangeStart - Optional byte range start (inclusive)
+ * @param {number|null} rangeEnd - Optional byte range end (inclusive)
  * @returns {Response} - Fetch response (streamable)
  */
-export async function fetchRawFile(pat, repo, path, maxRetries = 3) {
+export async function fetchRawFile(pat, repo, path, maxRetries = 3, rangeStart = null, rangeEnd = null) {
   const owner = await getOwner(pat);
   const url = `${RAW_GITHUB}/${owner}/${repo}/main/${path}`;
+
+  const requestHeaders = {
+    "Authorization": `Bearer ${pat}`,
+    "User-Agent": "LwtStore/1.0",
+  };
+
+  if (rangeStart !== null) {
+    const rangeValue = rangeEnd !== null
+      ? `bytes=${rangeStart}-${rangeEnd}`
+      : `bytes=${rangeStart}-`;
+    requestHeaders["Range"] = rangeValue;
+  }
 
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url, {
-        headers: {
-          "Authorization": `Bearer ${pat}`,
-          "User-Agent": "LwtStore/1.0",
-        },
-      });
+      const res = await fetch(url, { headers: requestHeaders });
 
-      if (res.ok) return res;
+      // 200 (full) or 206 (partial) are both success
+      if (res.ok || res.status === 206) return res;
 
       // Retry on server errors (5xx), fail immediately on client errors (4xx)
       if (res.status < 500) {

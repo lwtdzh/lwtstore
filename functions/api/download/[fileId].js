@@ -238,19 +238,18 @@ async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex
 
       const needsFullPart = localStart === 0 && localEnd === partSize - 1;
 
-      // Fetch the part from GitHub
-      const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
-
       if (needsFullPart) {
-        // Stream the entire part directly without buffering into memory
+        // Fetch and stream the entire part directly without buffering
+        const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
         await streamBody(response.body, writer);
       } else {
         // Partial part needed (first or last part of a range request).
-        // We must buffer this single part to slice it, but only one part
-        // is ever buffered at a time, which is safe for Workers.
-        const partData = new Uint8Array(await response.arrayBuffer());
-        const slice = partData.slice(localStart, localEnd + 1);
-        await writer.write(slice);
+        // Use HTTP Range to fetch only the needed slice from GitHub,
+        // avoiding buffering the entire part (which can be 20MB+) into memory.
+        const response = await fetchRawFile(
+          pat, metadata.bucketRepo, partPath, 3, localStart, localEnd
+        );
+        await streamBody(response.body, writer);
       }
     }
 
