@@ -678,3 +678,35 @@ window.copyLink = function (url) {
     showToast("链接已复制到剪贴板！");
   });
 };
+
+// ===== Link Exchange =====
+
+async function loadLinkExchange() {
+  try {
+    const res = await fetch("/api/links");
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (!data.links || data.links.length === 0) return;
+
+    const grid = document.getElementById("linksGrid");
+    const icons = ["✨", "🌐", "🔗", "💎", "🚀", "⭐", "🎯", "🌟"];
+
+    grid.innerHTML = data.links
+      .map((link, index) => {
+        const icon = icons[index % icons.length];
+        return `<a href="${link.url}" target="_blank" rel="noopener noreferrer" class="link-card">
+          <span class="link-icon">${icon}</span>
+          <span class="link-title">${link.title}</span>
+        </a>`;
+      })
+      .join("");
+
+    document.getElementById("linkExchange").style.display = "block";
+  } catch (err) {
+    // Silently fail — link exchange is non-critical
+  }
+}
+
+// Load link exchange on page load
+loadLinkExchange();
