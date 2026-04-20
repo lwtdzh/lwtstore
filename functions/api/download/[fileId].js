@@ -2,7 +2,6 @@
 // Supports: multi-thread downloads, resume at disconnected position
 import { getFile } from "../../lib/db.js";
 import { fetchRawFile } from "../../lib/github.js";
-import { PART_SIZE } from "../../lib/constants.js";
 
 /**
  * Build common response headers shared by GET / HEAD / OPTIONS.
@@ -118,9 +117,14 @@ export async function onRequestGet(context) {
 
     const contentLength = rangeEnd - rangeStart + 1;
 
-    // Determine which GitHub parts we need
-    const startPartIndex = Math.floor(rangeStart / PART_SIZE);
-    const endPartIndex = Math.floor(rangeEnd / PART_SIZE);
+    // Build a prefix-sum array of part boundaries from actual metadata.
+    // This avoids relying on the global PART_SIZE constant, which may differ
+    // from the part size used when the file was originally uploaded.
+    const partOffsets = buildPartOffsets(metadata.parts);
+
+    // Determine which parts we need based on actual part boundaries
+    const startPartIndex = findPartIndex(partOffsets, rangeStart);
+    const endPartIndex = findPartIndex(partOffsets, rangeEnd);
 
     // Use FixedLengthStream so Cloudflare preserves Content-Length instead of chunked encoding.
     // This is critical for browsers to show file size and for download managers to support resume.
@@ -128,7 +132,7 @@ export async function onRequestGet(context) {
     const writer = writable.getWriter();
 
     const assemblePromise = assembleParts(
-      writer, pat, metadata, startPartIndex, endPartIndex, rangeStart, rangeEnd
+      writer, pat, metadata, startPartIndex, endPartIndex, rangeStart, rangeEnd, partOffsets
     );
     assemblePromise.catch(async (err) => {
       try { await writer.abort(err); } catch (_) { /* already closed */ }
@@ -176,16 +180,50 @@ export async function onRequestHead(context) {
 }
 
 /**
+ * Build a prefix-sum array of byte offsets for each part.
+ * partOffsets[i] = the global byte offset where part i starts.
+ * partOffsets[parts.length] = total file size (sentinel).
+ * This allows us to map any byte position to the correct part index
+ * regardless of the PART_SIZE used during upload.
+ */
+function buildPartOffsets(parts) {
+  const offsets = new Array(parts.length + 1);
+  offsets[0] = 0;
+  for (let i = 0; i < parts.length; i++) {
+    offsets[i + 1] = offsets[i] + parts[i].size;
+  }
+  return offsets;
+}
+
+/**
+ * Binary search to find which part contains the given global byte position.
+ */
+function findPartIndex(partOffsets, bytePosition) {
+  let low = 0;
+  let high = partOffsets.length - 2; // last valid part index
+  while (low < high) {
+    const mid = (low + high + 1) >>> 1;
+    if (partOffsets[mid] <= bytePosition) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return low;
+}
+
+/**
  * Assemble file parts into a stream, handling byte ranges across parts.
  * Uses streaming to avoid loading entire parts into memory, which would
  * exceed Cloudflare Workers' memory limits on large files.
+ * Part boundaries are derived from partOffsets (not the global PART_SIZE constant).
  */
-async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex, rangeStart, rangeEnd) {
+async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex, rangeStart, rangeEnd, partOffsets) {
   try {
     for (let i = startPartIndex; i <= endPartIndex; i++) {
       const partPath = `${metadata.fileId}/part_${i.toString().padStart(4, "0")}`;
       const partSize = metadata.parts[i].size;
-      const partGlobalStart = i * PART_SIZE;
+      const partGlobalStart = partOffsets[i];
 
       // Determine local byte offsets within this part
       let localStart = 0;
@@ -209,7 +247,7 @@ async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex
       } else {
         // Partial part needed (first or last part of a range request).
         // We must buffer this single part to slice it, but only one part
-        // is ever buffered at a time (max 5MB), which is safe for Workers.
+        // is ever buffered at a time, which is safe for Workers.
         const partData = new Uint8Array(await response.arrayBuffer());
         const slice = partData.slice(localStart, localEnd + 1);
         await writer.write(slice);
