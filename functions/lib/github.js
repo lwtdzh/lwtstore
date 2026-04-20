@@ -287,25 +287,48 @@ export async function deleteFileParts(pat, repo, fileId, parts) {
 }
 
 /**
- * Fetch raw file content from GitHub
+ * Fetch raw file content from GitHub with automatic retry.
+ * GitHub raw CDN can occasionally return 5xx or time out, especially
+ * when many parts are fetched in sequence (e.g. during range-resume downloads).
  * @param {string} pat - GitHub PAT
  * @param {string} repo - Repository name
  * @param {string} path - File path
+ * @param {number} maxRetries - Maximum retry attempts (default 3)
  * @returns {Response} - Fetch response (streamable)
  */
-export async function fetchRawFile(pat, repo, path) {
+export async function fetchRawFile(pat, repo, path, maxRetries = 3) {
   const owner = await getOwner(pat);
   const url = `${RAW_GITHUB}/${owner}/${repo}/main/${path}`;
-  const res = await fetch(url, {
-    headers: {
-      "Authorization": `Bearer ${pat}`,
-      "User-Agent": "LwtStore/1.0",
-    },
-  });
 
-  if (!res.ok) {
-    throw new Error(`Failed to fetch raw file ${path} from ${repo}: ${res.status}`);
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "Authorization": `Bearer ${pat}`,
+          "User-Agent": "LwtStore/1.0",
+        },
+      });
+
+      if (res.ok) return res;
+
+      // Retry on server errors (5xx), fail immediately on client errors (4xx)
+      if (res.status < 500) {
+        throw new Error(`Failed to fetch raw file ${path} from ${repo}: ${res.status}`);
+      }
+
+      lastError = new Error(`GitHub returned ${res.status} for ${path} (attempt ${attempt}/${maxRetries})`);
+    } catch (err) {
+      lastError = err;
+      // Network errors (timeout, DNS, etc.) are retryable
+      if (err.message.includes("Failed to fetch raw file")) throw err; // 4xx, don't retry
+    }
+
+    if (attempt < maxRetries) {
+      // Exponential backoff: 500ms, 1000ms
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
   }
 
-  return res;
+  throw lastError;
 }
