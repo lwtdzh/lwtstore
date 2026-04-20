@@ -1,7 +1,7 @@
 // GET /api/download/{fileId} - Download a file with HTTP Range support
 // Supports: multi-thread downloads, resume at disconnected position
 import { getFile } from "../../lib/db.js";
-import { fetchRawFile } from "../../lib/github.js";
+import { fetchRawFile, getActualPartSizes } from "../../lib/github.js";
 
 /**
  * Build common response headers shared by GET / HEAD / OPTIONS.
@@ -117,13 +117,18 @@ export async function onRequestGet(context) {
 
     const contentLength = rangeEnd - rangeStart + 1;
 
+    // Get actual part sizes from GitHub (DB sizes may be inaccurate if
+    // PART_SIZE was changed between upload sessions).
+    const actualSizes = await getActualPartSizes(pat, metadata.bucketRepo, fileId);
+    const partOffsets = buildPartOffsets(actualSizes);
+
     // Use FixedLengthStream so Cloudflare preserves Content-Length instead of chunked encoding.
     // This is critical for browsers to show file size and for download managers to support resume.
     const { readable, writable } = new FixedLengthStream(contentLength);
     const writer = writable.getWriter();
 
     const assemblePromise = assembleParts(
-      writer, pat, metadata, rangeStart, rangeEnd
+      writer, pat, metadata, rangeStart, rangeEnd, partOffsets
     );
     assemblePromise.catch(async (err) => {
       try { await writer.abort(err); } catch (_) { /* already closed */ }
@@ -171,64 +176,109 @@ export async function onRequestHead(context) {
 }
 
 /**
- * Assemble file parts into a stream, handling byte ranges.
- *
- * Uses a simple global byte counter to track position across parts.
- * This approach does NOT rely on database part sizes being accurate —
- * it uses the actual bytes received from GitHub, making it robust against
- * metadata inconsistencies (e.g. part sizes recorded during upload may
- * differ from actual stored sizes if PART_SIZE was changed mid-upload).
- *
- * Trade-off: for Range requests starting deep into the file, we must
- * fetch and discard earlier parts. This is acceptable because:
- *   - Cloudflare Workers stream data without buffering (low memory)
- *   - GitHub CDN is fast, so skipping is quick
- *   - Correctness is more important than skipping a few parts
+ * Build a prefix-sum array of byte offsets from actual part sizes.
+ * partOffsets[i] = the global byte offset where part i starts.
  */
-async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd) {
-  let globalPosition = 0;  // current byte position across all parts
-  let written = 0;
-  const targetLength = rangeEnd - rangeStart + 1;
+function buildPartOffsets(actualSizes) {
+  const offsets = new Array(actualSizes.length + 1);
+  offsets[0] = 0;
+  for (let i = 0; i < actualSizes.length; i++) {
+    offsets[i + 1] = offsets[i] + actualSizes[i];
+  }
+  return offsets;
+}
+
+/**
+ * Binary search to find which part contains the given global byte position.
+ */
+function findPartIndex(partOffsets, bytePosition) {
+  let low = 0;
+  let high = partOffsets.length - 2;
+  while (low < high) {
+    const mid = (low + high + 1) >>> 1;
+    if (partOffsets[mid] <= bytePosition) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return low;
+}
+
+/**
+ * Assemble file parts into a stream, handling byte ranges across parts.
+ *
+ * Uses actual part sizes from GitHub (via HEAD requests) to compute
+ * correct byte offsets. This is necessary because DB part sizes may be
+ * inaccurate if PART_SIZE was changed between upload sessions.
+ *
+ * Streams data without buffering entire parts into memory.
+ */
+async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd, partOffsets) {
+  const startPartIndex = findPartIndex(partOffsets, rangeStart);
+  const endPartIndex = findPartIndex(partOffsets, rangeEnd);
 
   try {
-    for (let i = 0; i < metadata.parts.length; i++) {
-      if (written >= targetLength) break;
-
+    for (let i = startPartIndex; i <= endPartIndex; i++) {
       const partPath = `${metadata.fileId}/part_${i.toString().padStart(4, "0")}`;
+      const partGlobalStart = partOffsets[i];
+      const actualPartSize = partOffsets[i + 1] - partOffsets[i];
+
+      // Determine local byte offsets within this part
+      let localStart = 0;
+      let localEnd = actualPartSize - 1;
+
+      if (i === startPartIndex) {
+        localStart = rangeStart - partGlobalStart;
+      }
+      if (i === endPartIndex) {
+        localEnd = rangeEnd - partGlobalStart;
+      }
+
+      const needsFullPart = localStart === 0 && localEnd === actualPartSize - 1;
 
       // Fetch the part from GitHub
       const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
-      const reader = response.body.getReader();
 
-      try {
-        while (written < targetLength) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunkGlobalStart = globalPosition;
-          const chunkGlobalEnd = globalPosition + value.length - 1;
-          globalPosition += value.length;
-
-          // Skip chunks entirely before the range we need
-          if (chunkGlobalEnd < rangeStart) continue;
-
-          // Skip chunks entirely after the range we need
-          if (chunkGlobalStart > rangeEnd) break;
-
-          // Determine the useful slice within this chunk
-          const sliceStart = Math.max(0, rangeStart - chunkGlobalStart);
-          const sliceEnd = Math.min(value.length, rangeEnd - chunkGlobalStart + 1);
-          const slice = value.subarray(sliceStart, sliceEnd);
-
-          await writer.write(slice);
-          written += slice.length;
+      if (needsFullPart) {
+        // Stream the entire part directly
+        const reader = response.body.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await writer.write(value);
+          }
+        } finally {
+          reader.releaseLock();
         }
-      } finally {
-        reader.releaseLock();
-      }
+      } else {
+        // Stream through the part, skipping/truncating as needed
+        const reader = response.body.getReader();
+        let position = 0;
+        const targetLength = localEnd - localStart + 1;
+        let written = 0;
+        try {
+          while (written < targetLength) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-      // If we've already passed the range end, no need to fetch more parts
-      if (globalPosition > rangeEnd) break;
+            const chunkEnd = position + value.length - 1;
+
+            if (chunkEnd >= localStart) {
+              const sliceStart = Math.max(0, localStart - position);
+              const sliceEnd = Math.min(value.length, localEnd - position + 1);
+              const slice = value.subarray(sliceStart, sliceEnd);
+              await writer.write(slice);
+              written += slice.length;
+            }
+
+            position += value.length;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
     }
 
     await writer.close();

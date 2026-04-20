@@ -346,3 +346,33 @@ export async function fetchRawFile(pat, repo, path, maxRetries = 3, rangeStart =
 
   throw lastError;
 }
+
+/**
+ * Get actual file sizes for all parts of a file by querying GitHub Contents API.
+ * This is needed because DB part sizes may be inaccurate if PART_SIZE was
+ * changed between upload sessions. The Contents API returns accurate sizes
+ * without downloading file content.
+ *
+ * @param {string} pat - GitHub PAT
+ * @param {string} repo - Repository name
+ * @param {string} fileId - File ID (directory name in the repo)
+ * @returns {number[]} - Array of actual part sizes in order
+ */
+export async function getActualPartSizes(pat, repo, fileId) {
+  const owner = await getOwner(pat);
+  const res = await fetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/contents/${fileId}`,
+    { headers: headers(pat) }
+  );
+
+  if (!res.ok) {
+    throw new Error(`Failed to list parts for ${fileId} in ${repo}: ${res.status}`);
+  }
+
+  const files = await res.json();
+
+  // Sort by filename to ensure correct order (part_0000, part_0001, ...)
+  files.sort((a, b) => a.name.localeCompare(b.name));
+
+  return files.map((f) => f.size);
+}
