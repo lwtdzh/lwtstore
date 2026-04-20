@@ -238,18 +238,18 @@ async function assembleParts(writer, pat, metadata, startPartIndex, endPartIndex
 
       const needsFullPart = localStart === 0 && localEnd === partSize - 1;
 
+      // Fetch the full part from GitHub (GitHub raw CDN does not reliably
+      // support Range requests, so we always fetch the complete part).
+      const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
+
       if (needsFullPart) {
-        // Fetch and stream the entire part directly without buffering
-        const response = await fetchRawFile(pat, metadata.bucketRepo, partPath);
+        // Stream the entire part directly without buffering
         await streamBody(response.body, writer);
       } else {
         // Partial part needed (first or last part of a range request).
-        // Use HTTP Range to fetch only the needed slice from GitHub,
-        // avoiding buffering the entire part (which can be 20MB+) into memory.
-        const response = await fetchRawFile(
-          pat, metadata.bucketRepo, partPath, 3, localStart, localEnd
-        );
-        await streamBody(response.body, writer);
+        // Stream through the part, skipping/truncating bytes as needed,
+        // so we never buffer the entire part into memory at once.
+        await streamSlice(response.body, writer, localStart, localEnd);
       }
     }
 
@@ -275,6 +275,47 @@ async function streamBody(body, writer) {
       const { done, value } = await reader.read();
       if (done) break;
       await writer.write(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Stream a slice of a ReadableStream body into a writer.
+ * Skips bytes before localStart and stops after localEnd,
+ * without ever buffering the entire stream into memory.
+ *
+ * @param {ReadableStream} body - The full part body from GitHub
+ * @param {WritableStreamDefaultWriter} writer - Output writer
+ * @param {number} localStart - First byte offset to include (within the part)
+ * @param {number} localEnd - Last byte offset to include (within the part)
+ */
+async function streamSlice(body, writer, localStart, localEnd) {
+  const reader = body.getReader();
+  let position = 0; // current byte position in the part stream
+  const targetLength = localEnd - localStart + 1;
+  let written = 0;
+
+  try {
+    while (written < targetLength) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunkStart = position;
+      const chunkEnd = position + value.length - 1;
+      position += value.length;
+
+      // Skip chunks entirely before the range we need
+      if (chunkEnd < localStart) continue;
+
+      // Determine the useful slice within this chunk
+      const sliceStart = Math.max(0, localStart - chunkStart);
+      const sliceEnd = Math.min(value.length, localEnd - chunkStart + 1);
+      const slice = value.subarray(sliceStart, sliceEnd);
+
+      await writer.write(slice);
+      written += slice.length;
     }
   } finally {
     reader.releaseLock();
