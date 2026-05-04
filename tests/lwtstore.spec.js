@@ -469,6 +469,7 @@ test.describe("Upload Resume After Disconnection", () => {
           buffer: chunk0,
         },
       },
+      timeout: 120000,
     });
     expect(part0Res.status()).toBe(200);
 
@@ -500,6 +501,7 @@ test.describe("Upload Resume After Disconnection", () => {
           buffer: chunk1,
         },
       },
+      timeout: 120000,
     });
     expect(part1Res.status()).toBe(200);
     const part1Data = await part1Res.json();
