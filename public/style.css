@@ -525,6 +525,10 @@ footer {
   transition: width 0.2s ease;
 }
 
+.upload-progress-fill {
+  background: var(--success);
+}
+
 .download-meta,
 .download-retry {
   color: var(--text-secondary);
@@ -558,6 +562,24 @@ footer {
 .download-controls .btn {
   padding: 5px 9px;
   font-size: 0.75rem;
+}
+
+.transfer-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: #eff6ff;
+  color: var(--primary);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.upload-kind {
+  background: #dcfce7;
+  color: var(--success);
 }
 
 /* File List Header with Search */

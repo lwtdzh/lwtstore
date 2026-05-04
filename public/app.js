@@ -35,6 +35,8 @@ const pageNumbers = document.getElementById("pageNumbers");
 
 let currentUpload = null; // Track current upload state
 let uploadCancelled = false;
+let pendingResumeFileHash = null;
+let activeUploadXhr = null;
 
 // Speed tracking state
 let speedTracker = {
@@ -86,7 +88,15 @@ function setupUploadArea() {
 
   fileInput.addEventListener("change", (e) => {
     if (e.target.files.length > 0) {
-      startUpload(e.target.files[0]);
+      const file = e.target.files[0];
+      const fileHash = generateFileHash(file);
+      if (pendingResumeFileHash && pendingResumeFileHash !== fileHash) {
+        showToast("请选择同一个文件位置继续上传");
+        fileInput.value = "";
+        return;
+      }
+      pendingResumeFileHash = null;
+      startUpload(file);
     }
   });
 }
@@ -94,8 +104,12 @@ function setupUploadArea() {
 function setupButtons() {
   cancelBtn.addEventListener("click", () => {
     uploadCancelled = true;
+    if (activeUploadXhr) activeUploadXhr.abort();
     cancelBtn.style.display = "none";
-    uploadStatus.textContent = "已取消";
+    uploadStatus.textContent = "已暂停，可从传输面板选择同一文件继续";
+    if (currentUpload?.fileHash && window.lwtTransferManager) {
+      window.lwtTransferManager.pauseUploadTask(currentUpload.fileHash);
+    }
   });
 
   copyLinkBtn.addEventListener("click", () => {
@@ -116,13 +130,37 @@ function generateFileHash(file) {
   return `${file.name}-${file.size}-${file.lastModified}`;
 }
 
+window.lwtUploadControls = {
+  chooseFile(fileHash) {
+    pendingResumeFileHash = fileHash;
+    fileInput.click();
+  },
+  cancelUpload(fileHash) {
+    if (!fileHash || currentUpload?.fileHash === fileHash) {
+      uploadCancelled = true;
+      if (activeUploadXhr) activeUploadXhr.abort();
+      uploadStatus.textContent = "已暂停，可从传输面板选择同一文件继续";
+    }
+  },
+};
+
 async function startUpload(file) {
   if (file.size > MAX_FILE_SIZE) {
     showToast("文件大小超过 5GB 限制！");
     return;
   }
 
+  const fileHash = generateFileHash(file);
+  const transferManager = window.lwtTransferManager || window.lwtDownloadManager;
+
   uploadCancelled = false;
+  currentUpload = { fileHash };
+  transferManager?.startUploadTask({
+    fileHash,
+    fileName: file.name,
+    fileSize: file.size,
+    lastModified: file.lastModified,
+  });
 
   // Show progress UI
   uploadArea.style.display = "none";
@@ -137,8 +175,7 @@ async function startUpload(file) {
 
   try {
     // Step 1: Initialize upload
-    const fileHash = generateFileHash(file);
-    const initRes = await fetch("/api/upload/init", {
+    const initData = await fetchJsonWithInfiniteRetry("/api/upload/init", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -146,15 +183,16 @@ async function startUpload(file) {
         fileSize: file.size,
         fileHash: fileHash,
       }),
+    }, {
+      isCancelled: () => uploadCancelled,
+      onRetry: (attempt, err, backoffMs) => {
+        const message = `初始化失败(${err.message})，${Math.round(backoffMs / 1000)}秒后重试...`;
+        uploadStatus.textContent = message;
+        transferManager?.updateUploadTask(fileHash, { retryMessage: message });
+      },
     });
-
-    if (!initRes.ok) {
-      const err = await initRes.json();
-      throw new Error(err.error || "Failed to initialize upload");
-    }
-
-    const initData = await initRes.json();
     const { fileId, totalParts, uploadedParts } = initData;
+    currentUpload = { fileHash, fileId };
 
     // Use server-provided PART_SIZE to ensure client/server consistency
     if (initData.partSize) {
@@ -162,7 +200,26 @@ async function startUpload(file) {
     }
 
     // Save to localStorage for resume
-    saveUploadState(fileHash, { fileId, fileName: file.name, fileSize: file.size });
+    saveUploadState(fileHash, {
+      fileHash,
+      fileId,
+      fileName: file.name,
+      fileSize: file.size,
+      lastModified: file.lastModified,
+      partSize: PART_SIZE,
+      totalParts,
+      uploadedParts,
+      uploadedBytes: 0,
+      status: "running",
+    });
+    transferManager?.updateUploadTask(fileHash, {
+      fileId,
+      partSize: PART_SIZE,
+      totalParts,
+      uploadedParts,
+      status: "running",
+      retryMessage: "",
+    });
 
     if (initData.resumed) {
       uploadStatus.textContent = `恢复上传 (${uploadedParts.length}/${totalParts} 已完成)`;
@@ -178,10 +235,16 @@ async function startUpload(file) {
     }
 
     updateProgress(completedBytes, file.size);
+    transferManager?.updateUploadTask(fileHash, {
+      uploadedBytes: completedBytes,
+      uploadedParts,
+      retryMessage: "",
+    });
 
     for (let i = 0; i < totalParts; i++) {
       if (uploadCancelled) {
-        uploadStatus.textContent = "已取消";
+        uploadStatus.textContent = "已暂停，可从传输面板选择同一文件继续";
+        transferManager?.pauseUploadTask(fileHash);
         return;
       }
 
@@ -190,6 +253,10 @@ async function startUpload(file) {
       }
 
       uploadStatus.textContent = `上传分片 ${i + 1}/${totalParts}...`;
+      transferManager?.updateUploadTask(fileHash, {
+        status: "running",
+        retryMessage: `上传分片 ${i + 1}/${totalParts}...`,
+      });
 
       const start = i * PART_SIZE;
       const end = Math.min(start + PART_SIZE, file.size);
@@ -203,7 +270,8 @@ async function startUpload(file) {
 
       while (!success) {
         if (uploadCancelled) {
-          uploadStatus.textContent = "已取消";
+          uploadStatus.textContent = "已暂停，可从传输面板选择同一文件继续";
+          transferManager?.pauseUploadTask(fileHash);
           return;
         }
 
@@ -219,6 +287,11 @@ async function startUpload(file) {
             (partLoaded) => {
               const totalLoaded = completedBytes + Math.min(partLoaded, partSize);
               updateProgress(totalLoaded, file.size);
+              transferManager?.updateUploadTask(fileHash, {
+                status: "running",
+                uploadedBytes: totalLoaded,
+                retryMessage: "",
+              });
             },
             120000
           );
@@ -229,36 +302,67 @@ async function startUpload(file) {
 
           success = true;
           attempt = 0;
+          uploadedSet.add(i);
           completedBytes += partSize;
           updateProgress(completedBytes, file.size);
+          const uploadedPartsNow = Array.from(uploadedSet).sort((a, b) => a - b);
+          saveUploadState(fileHash, {
+            fileHash,
+            fileId,
+            fileName: file.name,
+            fileSize: file.size,
+            lastModified: file.lastModified,
+            partSize: PART_SIZE,
+            totalParts,
+            uploadedParts: uploadedPartsNow,
+            uploadedBytes: completedBytes,
+            status: "running",
+          });
+          transferManager?.updateUploadTask(fileHash, {
+            uploadedParts: uploadedPartsNow,
+            uploadedBytes: completedBytes,
+            retryMessage: "",
+          });
         } catch (err) {
           attempt++;
           const errorMsg = err.message || "未知错误";
           const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
           uploadStatus.textContent = `分片 ${i + 1} 失败(${errorMsg})，${Math.round(backoffMs / 1000)}秒后重试...`;
-          await new Promise((r) => setTimeout(r, backoffMs));
+          transferManager?.updateUploadTask(fileHash, {
+            retryMessage: uploadStatus.textContent,
+          });
+          await sleepWithUploadCancel(backoffMs);
         }
       }
     }
 
     // Step 3: Complete upload
     uploadStatus.textContent = "正在完成上传...";
+    transferManager?.updateUploadTask(fileHash, {
+      retryMessage: "正在完成上传...",
+    });
 
-    const completeRes = await fetch("/api/upload/complete", {
+    const completeData = await fetchJsonWithInfiniteRetry("/api/upload/complete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fileId }),
+    }, {
+      isCancelled: () => uploadCancelled,
+      onRetry: (attempt, err, backoffMs) => {
+        const message = `完成上传失败(${err.message})，${Math.round(backoffMs / 1000)}秒后重试...`;
+        uploadStatus.textContent = message;
+        transferManager?.updateUploadTask(fileHash, { retryMessage: message });
+      },
     });
-
-    if (!completeRes.ok) {
-      const err = await completeRes.json();
-      throw new Error(err.error || "Failed to complete upload");
-    }
-
-    const completeData = await completeRes.json();
 
     // Clear saved state
     clearUploadState(fileHash);
+    transferManager?.completeUploadTask(fileHash, {
+      fileId,
+      downloadUrl: completeData.downloadUrl,
+      uploadedBytes: file.size,
+      uploadedParts: Array.from(uploadedSet).sort((a, b) => a - b),
+    });
 
     // Show success
     uploadProgress.style.display = "none";
@@ -271,9 +375,67 @@ async function startUpload(file) {
     // Refresh file list
     loadFileList();
   } catch (err) {
-    uploadStatus.textContent = `错误: ${err.message}`;
-    showToast(`上传失败: ${err.message}`);
+    if (uploadCancelled) {
+      uploadStatus.textContent = "已暂停，可从传输面板选择同一文件继续";
+      transferManager?.pauseUploadTask(fileHash);
+      showToast("上传已暂停");
+    } else {
+      uploadStatus.textContent = `错误: ${err.message}`;
+      transferManager?.pauseUploadTask(fileHash, `上传中断: ${err.message}。请选择同一文件继续上传`);
+      showToast(`上传失败: ${err.message}`);
+    }
+  } finally {
+    activeUploadXhr = null;
   }
+}
+
+async function fetchJsonWithInfiniteRetry(url, options, { isCancelled, onRetry } = {}) {
+  let attempt = 0;
+
+  while (true) {
+    if (isCancelled?.()) throw new Error("上传已暂停");
+
+    try {
+      const res = await fetch(url, options);
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = null;
+      }
+
+      if (res.ok) return data || {};
+
+      const message = data?.error || `HTTP ${res.status}`;
+      const err = new Error(message);
+      err.nonRetryable = res.status < 500 && res.status !== 429;
+      throw err;
+    } catch (err) {
+      if (isCancelled?.()) throw err;
+      if (err.nonRetryable) throw err;
+
+      attempt++;
+      const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+      if (onRetry) onRetry(attempt, err, backoffMs);
+      await sleepWithUploadCancel(backoffMs);
+    }
+  }
+}
+
+function sleepWithUploadCancel(ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      clearInterval(check);
+      resolve();
+    }, ms);
+    const check = setInterval(() => {
+      if (uploadCancelled) {
+        clearTimeout(timer);
+        clearInterval(check);
+        reject(new Error("上传已暂停"));
+      }
+    }, 200);
+  });
 }
 
 // ==================== Resume Upload ====================
@@ -285,7 +447,7 @@ function saveUploadState(fileHash, state) {
     localStorage.setItem("lwt_uploads", JSON.stringify(uploads));
 
     // Also set a cookie for cross-tab resume detection
-    document.cookie = `lwt_upload_active=${fileHash}; path=/; max-age=86400; SameSite=Lax`;
+    document.cookie = `lwt_upload_active=${encodeURIComponent(fileHash)}; path=/; max-age=2592000; SameSite=Lax`;
   } catch (e) {
     // localStorage might be full or unavailable
   }
@@ -310,12 +472,16 @@ function checkResumeUpload() {
     const activeCookie = cookies.find((c) => c.startsWith("lwt_upload_active="));
     if (!activeCookie) return;
 
-    const fileHash = activeCookie.split("=")[1];
+    const fileHash = decodeURIComponent(activeCookie.split("=")[1] || "");
     if (!fileHash) return;
 
     const uploads = JSON.parse(localStorage.getItem("lwt_uploads") || "{}");
     const state = uploads[fileHash];
     if (!state) return;
+
+    if (window.lwtTransferManager) {
+      window.lwtTransferManager.expandTray();
+    }
 
     // Show a notification that there's a resumable upload
     const resumeNotice = document.createElement("div");
@@ -323,10 +489,11 @@ function checkResumeUpload() {
     resumeNotice.style.cssText = "bottom: 24px; right: 24px; cursor: pointer; opacity: 1; transform: translateY(0);";
     resumeNotice.innerHTML = `
       <div>检测到未完成的上传: <strong>${state.fileName}</strong></div>
-      <div style="font-size: 0.8rem; margin-top: 4px;">请重新选择同一文件以恢复上传</div>
+      <div style="font-size: 0.8rem; margin-top: 4px;">请在传输面板中选择同一文件继续上传</div>
     `;
     resumeNotice.addEventListener("click", () => {
       resumeNotice.remove();
+      pendingResumeFileHash = fileHash;
       fileInput.click();
     });
     document.body.appendChild(resumeNotice);
@@ -499,6 +666,7 @@ async function loadFileList() {
 function uploadPartWithProgress(formData, onProgress, timeoutMs) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    activeUploadXhr = xhr;
     xhr.open("POST", "/api/upload/part");
     xhr.timeout = timeoutMs;
 
@@ -509,6 +677,7 @@ function uploadPartWithProgress(formData, onProgress, timeoutMs) {
     });
 
     xhr.addEventListener("load", () => {
+      if (activeUploadXhr === xhr) activeUploadXhr = null;
       try {
         const data = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
@@ -522,14 +691,17 @@ function uploadPartWithProgress(formData, onProgress, timeoutMs) {
     });
 
     xhr.addEventListener("error", () => {
+      if (activeUploadXhr === xhr) activeUploadXhr = null;
       reject(new Error("网络错误，请检查网络连接"));
     });
 
     xhr.addEventListener("timeout", () => {
+      if (activeUploadXhr === xhr) activeUploadXhr = null;
       reject(new Error("请求超时"));
     });
 
     xhr.addEventListener("abort", () => {
+      if (activeUploadXhr === xhr) activeUploadXhr = null;
       reject(new Error("上传已取消"));
     });
 

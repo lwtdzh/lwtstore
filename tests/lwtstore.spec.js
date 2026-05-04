@@ -792,9 +792,19 @@ test.describe("UI Upload with Refresh Resume Detection", () => {
     await expect(resumeToast).toBeVisible({ timeout: 5000 });
     await expect(resumeToast).toContainText("test-ui-resume.bin");
 
+    // The shared transfer tray should also keep the upload procedure visible
+    // after reload and ask the user to pick the same local file.
+    const tray = page.locator("#downloadTray");
+    await expect(tray).toHaveClass(/expanded/);
+    const uploadItem = page.locator(".download-item", { hasText: "test-ui-resume.bin" });
+    await expect(uploadItem).toContainText("上传");
+    await expect(uploadItem).toContainText("等待同一文件");
+    await expect(uploadItem.locator("[data-download-action='resume']")).toContainText("选择同一文件继续");
+
     // Clean up
     await page.evaluate(() => {
       localStorage.removeItem("lwt_uploads");
+      localStorage.removeItem("lwt_downloads");
       document.cookie = "lwt_upload_active=; path=/; max-age=0";
     });
   });
@@ -889,6 +899,7 @@ test.describe("Static Assets", () => {
     expect(contentType).toContain("javascript");
     const body = await res.text();
     expect(body).toContain("lwtDownloadManager");
+    expect(body).toContain("lwtTransferManager");
     expect(body).toContain("indexedDB");
   });
 });
@@ -1423,6 +1434,8 @@ test.describe("Upload Speed Indicator", () => {
 
     // Wait for upload progress to appear
     await page.waitForSelector("#uploadProgress", { state: "visible", timeout: 10000 });
+    await expect(page.locator("#downloadTray")).toHaveClass(/expanded/);
+    await expect(page.locator(".download-item", { hasText: path.basename(tmpFile) })).toContainText("上传");
 
     // Poll for speed text to appear (it shows after >=500ms of data transfer)
     const speedEl = page.locator("#uploadSpeed");
