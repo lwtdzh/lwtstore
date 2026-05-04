@@ -164,43 +164,60 @@ export async function selectBucket(pat, fileSize) {
  */
 export async function uploadFile(pat, repo, path, contentBase64, message) {
   const owner = await getOwner(pat);
-  // First check if file already exists (to get SHA for update)
-  let existingSha = null;
-  try {
-    existingSha = await getFileSha(pat, repo, path);
-  } catch (e) {
-    // File doesn't exist, that's fine
-  }
 
-  const body = {
-    message: message || `Upload ${path}`,
-    content: contentBase64,
-  };
+  while (true) {
+    try {
+      // First check if file already exists (to get SHA for update).
+      // This must be re-read on each retry because GitHub can return 409
+      // when a previous timed-out request finished shortly before this one.
+      let existingSha = null;
+      try {
+        existingSha = await getFileSha(pat, repo, path);
+      } catch (e) {
+        // File doesn't exist, that's fine.
+      }
 
-  if (existingSha) {
-    body.sha = existingSha;
-  }
+      const body = {
+        message: message || `Upload ${path}`,
+        content: contentBase64,
+      };
 
-  const res = await fetch(
-    `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`,
-    {
-      method: "PUT",
-      headers: { ...headers(pat), "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      if (existingSha) {
+        body.sha = existingSha;
+      }
+
+      const res = await fetch(
+        `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`,
+        {
+          method: "PUT",
+          headers: { ...headers(pat), "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          sha: data.content.sha,
+          size: data.content.size,
+          downloadUrl: `${RAW_GITHUB}/${owner}/${repo}/main/${path}`,
+        };
+      }
+
+      const err = await res.text();
+      if (!isRetryableGitHubUploadStatus(res.status)) {
+        throw new Error(`Failed to upload file ${path} to ${repo}: ${res.status} ${err}`);
+      }
+    } catch (err) {
+      if (err.message && err.message.startsWith("Failed to upload file")) throw err;
     }
-  );
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Failed to upload file ${path} to ${repo}: ${res.status} ${err}`);
+    await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS));
   }
+}
 
-  const data = await res.json();
-  return {
-    sha: data.content.sha,
-    size: data.content.size,
-    downloadUrl: `${RAW_GITHUB}/${owner}/${repo}/main/${path}`,
-  };
+function isRetryableGitHubUploadStatus(status) {
+  return status === 409 || status === 429 || status >= 500;
 }
 
 /**
@@ -321,7 +338,6 @@ export async function fetchRawFile(pat, repo, path, rangeStart = null, rangeEnd 
 
   // Retry forever with a fixed short wait.
   // Only 4xx errors are non-retryable (client error / file not found).
-  let attempt = 0;
   while (true) {
     try {
       const res = await fetch(url, { headers: requestHeaders });
@@ -335,12 +351,10 @@ export async function fetchRawFile(pat, repo, path, rangeStart = null, rangeEnd 
       }
 
       // 5xx = server error, retryable
-      attempt++;
     } catch (err) {
       // 4xx errors thrown above — don't retry
       if (err.message.includes("Failed to fetch raw file")) throw err;
       // Network errors (timeout, DNS, etc.) are retryable
-      attempt++;
     }
 
     await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS));
