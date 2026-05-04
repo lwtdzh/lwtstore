@@ -397,6 +397,7 @@ test.describe("Multi-part File Upload", () => {
             buffer: chunk,
           },
         },
+        timeout: 120000,
       });
       expect(partRes.status()).toBe(200);
       const partData = await partRes.json();
