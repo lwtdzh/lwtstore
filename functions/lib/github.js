@@ -4,6 +4,7 @@ import { BUCKET_PREFIX, MAX_BUCKET_SIZE_KB, GITHUB_API, RAW_GITHUB } from "./con
 // Cache the GitHub owner username (resolved from PAT)
 let _cachedOwner = null;
 const RETRY_WAIT_MS = 1000;
+const MAX_INLINE_UPLOAD_RETRIES = 3;
 
 /**
  * Common headers for GitHub API requests
@@ -164,8 +165,9 @@ export async function selectBucket(pat, fileSize) {
  */
 export async function uploadFile(pat, repo, path, contentBase64, message) {
   const owner = await getOwner(pat);
+  let lastError = null;
 
-  while (true) {
+  for (let attempt = 0; attempt <= MAX_INLINE_UPLOAD_RETRIES; attempt++) {
     try {
       // First check if file already exists (to get SHA for update).
       // This must be re-read on each retry because GitHub can return 409
@@ -205,15 +207,30 @@ export async function uploadFile(pat, repo, path, contentBase64, message) {
       }
 
       const err = await res.text();
+      if (res.status === 409 && existingSha) {
+        return {
+          sha: existingSha,
+          size: null,
+          downloadUrl: `${RAW_GITHUB}/${owner}/${repo}/main/${path}`,
+        };
+      }
+
       if (!isRetryableGitHubUploadStatus(res.status)) {
         throw new Error(`Failed to upload file ${path} to ${repo}: ${res.status} ${err}`);
       }
+
+      lastError = new Error(`Failed to upload file ${path} to ${repo}: ${res.status} ${err}`);
     } catch (err) {
       if (err.message && err.message.startsWith("Failed to upload file")) throw err;
+      lastError = err;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS));
+    if (attempt < MAX_INLINE_UPLOAD_RETRIES) {
+      await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS));
+    }
   }
+
+  throw lastError || new Error(`Failed to upload file ${path} to ${repo}: retry limit reached`);
 }
 
 function isRetryableGitHubUploadStatus(status) {
