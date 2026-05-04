@@ -47,8 +47,8 @@
     createTray();
     renderTray();
 
-    document.addEventListener("click", () => {
-      if (!state.pinned) collapseTray();
+    document.addEventListener("click", (event) => {
+      if (!state.pinned && !isTrayInteraction(event)) collapseTray();
     });
   }
 
@@ -630,9 +630,22 @@
     const tray = document.createElement("div");
     tray.id = "downloadTray";
     tray.className = "download-tray";
-    tray.addEventListener("click", (e) => e.stopPropagation());
+    ["pointerdown", "mousedown", "touchstart", "click"].forEach((eventName) => {
+      tray.addEventListener(eventName, (event) => event.stopPropagation());
+    });
+    tray.addEventListener("focusin", () => {
+      state.expanded = true;
+      tray.classList.add("expanded");
+    });
     document.body.appendChild(tray);
     state.tray = tray;
+  }
+
+  function isTrayInteraction(event) {
+    if (!state.tray) return false;
+    if (event.composedPath && event.composedPath().includes(state.tray)) return true;
+    if (state.tray.contains(event.target)) return true;
+    return state.tray.contains(document.activeElement);
   }
 
   function expandTray() {
@@ -706,6 +719,13 @@
     });
 
     state.tray.querySelectorAll(".download-thread-select").forEach((select) => {
+      ["pointerdown", "mousedown", "touchstart", "click"].forEach((eventName) => {
+        select.addEventListener(eventName, (event) => event.stopPropagation());
+      });
+      select.addEventListener("focus", () => {
+        state.expanded = true;
+        state.tray.classList.add("expanded");
+      });
       select.addEventListener("change", () => {
         setDownloadThreads(select.getAttribute("data-download-id"), select.value);
       });

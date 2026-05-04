@@ -735,6 +735,39 @@ test.describe("Embedded Browser Download Manager", () => {
     await expect(page.locator(`[data-download-action='save'][data-download-id='${uploaded.fileId}']`)).toBeVisible();
   });
 
+  test("should keep tray open when clicking the download thread selector", async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.evaluate(() => {
+      localStorage.setItem("lwt_downloads", JSON.stringify([{
+        type: "download",
+        id: "thread-selector-test",
+        fileId: "thread-selector-test",
+        fileName: "thread-selector-test.bin",
+        fileSize: 1024,
+        url: `${location.origin}/api/download/thread-selector-test`,
+        chunkSize: 1024,
+        totalChunks: 1,
+        downloadedChunks: [],
+        threads: 3,
+        status: "paused",
+        error: "",
+        retryMessage: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }]));
+    });
+
+    await page.reload();
+    await page.click("#downloadTrayToggle");
+    const tray = page.locator("#downloadTray");
+    await expect(tray).toHaveClass(/expanded/);
+
+    await page.locator(".download-thread-select").click();
+    await expect(tray).toHaveClass(/expanded/);
+
+    await page.evaluate(() => localStorage.removeItem("lwt_downloads"));
+  });
+
   test.afterAll(async ({ request }) => {
     if (!uploaded) return;
     await request.post(`${BASE_URL}/api/admin/delete`, {
