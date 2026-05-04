@@ -13,6 +13,7 @@
   const DEFAULT_THREADS = 3;
   const MAX_THREADS = 8;
   const CHUNK_SIZE = 2 * 1024 * 1024;
+  const RETRY_WAIT_MS = 1000;
 
   const state = {
     tasks: new Map(),
@@ -474,7 +475,7 @@
         if (signal.aborted) throw new DOMException("Download paused", "AbortError");
 
         attempt++;
-        const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+        const backoffMs = RETRY_WAIT_MS;
         task.retryMessage = `分片 ${chunkIndex + 1} 失败(${err.message})，${Math.round(backoffMs / 1000)}秒后重试`;
         saveTasks();
         renderTray();

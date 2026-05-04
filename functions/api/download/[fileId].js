@@ -3,6 +3,8 @@
 import { getFile } from "../../lib/db.js";
 import { fetchRawFile, getActualPartSizes } from "../../lib/github.js";
 
+const RETRY_WAIT_MS = 1000;
+
 /**
  * Build common response headers shared by GET / HEAD / OPTIONS.
  * Includes Content-Length, Accept-Ranges, ETag, Last-Modified, CORS, etc.
@@ -245,8 +247,8 @@ async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd, partOf
       const needsFullPart = localStart === 0 && localEnd === actualPartSize - 1;
 
       // Fetch and stream this part with infinite retry.
-      // On any error (fetch failure, stream interruption), wait with
-      // exponential backoff (max 30s) and retry the entire part fetch.
+      // On any error (fetch failure, stream interruption), wait briefly
+      // and retry the entire part fetch.
       // Never propagate errors to the browser — keep the stream alive.
       await fetchAndStreamPart(
         writer, pat, metadata.bucketRepo, partPath,
@@ -267,7 +269,7 @@ async function assembleParts(writer, pat, metadata, rangeStart, rangeEnd, partOf
 
 /**
  * Fetch a single part from GitHub and stream it to the writer.
- * Retries forever on any error with exponential backoff capped at 30s.
+ * Retries forever on any error with a fixed short wait.
  * This ensures transient GitHub/network errors never kill the download.
  */
 async function fetchAndStreamPart(writer, pat, repo, partPath, needsFullPart, localStart, localEnd) {
@@ -323,12 +325,10 @@ async function fetchAndStreamPart(writer, pat, repo, partPath, needsFullPart, lo
         throw err;
       }
 
-      // Retryable error — wait with exponential backoff, then retry
+      // Retryable error — wait briefly, then retry
       attempt++;
-      const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS));
     }
   }
 }
-
 

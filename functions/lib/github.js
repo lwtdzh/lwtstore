@@ -3,6 +3,7 @@ import { BUCKET_PREFIX, MAX_BUCKET_SIZE_KB, GITHUB_API, RAW_GITHUB } from "./con
 
 // Cache the GitHub owner username (resolved from PAT)
 let _cachedOwner = null;
+const RETRY_WAIT_MS = 1000;
 
 /**
  * Common headers for GitHub API requests
@@ -318,7 +319,7 @@ export async function fetchRawFile(pat, repo, path, rangeStart = null, rangeEnd 
     requestHeaders["Range"] = rangeValue;
   }
 
-  // Retry forever with exponential backoff capped at 30s.
+  // Retry forever with a fixed short wait.
   // Only 4xx errors are non-retryable (client error / file not found).
   let attempt = 0;
   while (true) {
@@ -342,8 +343,7 @@ export async function fetchRawFile(pat, repo, path, rangeStart = null, rangeEnd 
       attempt++;
     }
 
-    const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
-    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS));
   }
 }
 

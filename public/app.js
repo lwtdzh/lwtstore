@@ -2,6 +2,7 @@
 
 let PART_SIZE = 5 * 1024 * 1024; // 5MB default, overridden by server during upload init
 const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
+const RETRY_WAIT_MS = 1000;
 
 // DOM Elements
 const uploadArea = document.getElementById("uploadArea");
@@ -263,7 +264,7 @@ async function startUpload(file) {
       const chunk = file.slice(start, end);
 
       // Upload with infinite retry until user cancels.
-      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped).
+      // Keep the retry wait fixed so transient Cloudflare failures recover quickly.
       let success = false;
       let attempt = 0;
       const partSize = end - start;
@@ -326,7 +327,7 @@ async function startUpload(file) {
         } catch (err) {
           attempt++;
           const errorMsg = err.message || "未知错误";
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+          const backoffMs = RETRY_WAIT_MS;
           uploadStatus.textContent = `分片 ${i + 1} 失败(${errorMsg})，${Math.round(backoffMs / 1000)}秒后重试...`;
           transferManager?.updateUploadTask(fileHash, {
             retryMessage: uploadStatus.textContent,
@@ -415,7 +416,7 @@ async function fetchJsonWithInfiniteRetry(url, options, { isCancelled, onRetry }
       if (err.nonRetryable) throw err;
 
       attempt++;
-      const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+      const backoffMs = RETRY_WAIT_MS;
       if (onRetry) onRetry(attempt, err, backoffMs);
       await sleepWithUploadCancel(backoffMs);
     }
