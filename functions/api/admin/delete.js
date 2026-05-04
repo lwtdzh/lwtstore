@@ -1,14 +1,14 @@
 // POST /api/admin/delete - Delete a file (admin only, password protected)
-// Deletes both the D1 metadata and the actual file parts from GitHub
-import { getFile, deleteFile } from "../../lib/db.js";
-import { deleteFileParts } from "../../lib/github.js";
+// Moves D1 metadata into the admin-only recycle bin. GitHub parts are left untouched.
+import { getFile, moveFileToRecycleBin } from "../../lib/db.js";
 
 export async function onRequestPost(context) {
   try {
-    const { fileId, password } = await context.request.json();
+    const { fileId, fileIds, password } = await context.request.json();
+    const ids = normalizeFileIds(fileId, fileIds);
 
-    if (!fileId || !password) {
-      return jsonResponse({ error: "Missing required fields: fileId, password" }, 400);
+    if (ids.length === 0 || !password) {
+      return jsonResponse({ error: "Missing required fields: fileId/fileIds, password" }, 400);
     }
 
     // Verify admin password (trim to handle env variable whitespace)
@@ -18,41 +18,58 @@ export async function onRequestPost(context) {
     }
 
     const db = context.env.FILES;
-    const pat = context.env.GITHUB_PRIVATE_KEY;
+    const deletedAt = new Date().toISOString();
+    const moved = [];
+    const errors = [];
 
-    // Check file exists
-    const file = await getFile(db, fileId);
-    if (!file) {
-      return jsonResponse({ error: "File not found" }, 404);
-    }
+    for (const id of ids) {
+      const file = await getFile(db, id);
+      if (!file || file.status !== "finished") {
+        errors.push({ fileId: id, error: "File not found" });
+        continue;
+      }
 
-    // Delete file parts from GitHub first (best-effort)
-    const githubErrors = [];
-    if (pat && file.bucketRepo && file.parts && file.parts.length > 0) {
-      try {
-        await deleteFileParts(pat, file.bucketRepo, fileId, file.parts);
-      } catch (e) {
-        githubErrors.push(e.message);
+      const changes = await moveFileToRecycleBin(db, id, deletedAt);
+      if (changes > 0) {
+        moved.push({
+          fileId: id,
+          fileName: file.fileName,
+        });
+      } else {
+        errors.push({ fileId: id, error: "File not found" });
       }
     }
 
-    // Delete metadata from D1
-    await deleteFile(db, fileId);
+    if (moved.length === 0) {
+      return jsonResponse({ error: "File not found", errors }, 404);
+    }
 
     const result = {
       success: true,
-      message: `File "${file.fileName}" deleted successfully`,
-      fileId,
+      message: moved.length === 1
+        ? `File "${moved[0].fileName}" moved to recycle bin`
+        : `${moved.length} files moved to recycle bin`,
+      fileId: moved.length === 1 ? moved[0].fileId : undefined,
+      fileIds: moved.map((file) => file.fileId),
+      deletedAt,
+      errors,
     };
-
-    if (githubErrors.length > 0) {
-      result.warnings = githubErrors;
-    }
 
     return jsonResponse(result);
   } catch (err) {
     return jsonResponse({ error: err.message }, 500);
   }
+}
+
+function normalizeFileIds(fileId, fileIds) {
+  const ids = [];
+  if (typeof fileId === "string" && fileId.trim()) ids.push(fileId.trim());
+  if (Array.isArray(fileIds)) {
+    for (const id of fileIds) {
+      if (typeof id === "string" && id.trim()) ids.push(id.trim());
+    }
+  }
+  return [...new Set(ids)].slice(0, 100);
 }
 
 function jsonResponse(data, status = 200) {

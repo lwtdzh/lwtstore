@@ -32,6 +32,17 @@
             <input type="text" id="adminSearchInput" placeholder="搜索文件名..." autocomplete="off">
           </div>
         </div>
+        <div class="admin-toolbar">
+          <div class="admin-tabs">
+            <button class="btn btn-page-num active" id="activeFilesTab">文件列表</button>
+            <button class="btn btn-page-num" id="recycleBinTab">回收站</button>
+          </div>
+          <div class="admin-bulk-actions">
+            <button class="btn btn-delete" id="bulkDeleteBtn" disabled>批量删除</button>
+            <button class="btn btn-copy-small" id="bulkRestoreBtn" disabled style="display: none;">批量恢复</button>
+            <button class="btn btn-delete" id="bulkPurgeBtn" disabled style="display: none;">永久移除</button>
+          </div>
+        </div>
         <div class="file-list" id="adminFileList">
           <div class="loading" id="adminFileListLoading">加载中...</div>
           <div class="empty-state" id="adminEmptyState" style="display: none;">
@@ -40,6 +51,7 @@
           <table class="file-table" id="adminFileTable" style="display: none;">
             <thead>
               <tr>
+                <th class="select-cell"><input type="checkbox" id="selectAllFiles" aria-label="全选文件"></th>
                 <th>文件名</th>
                 <th>大小</th>
                 <th>上传时间</th>
@@ -74,8 +86,8 @@
     <div class="modal-overlay" id="deleteModal" style="display: none;">
       <div class="modal">
         <h3>确认删除</h3>
-        <p>确定要删除文件 <strong id="deleteFileName"></strong> 吗？</p>
-        <p class="modal-warning">此操作不可撤销！</p>
+        <p id="deleteModalText">确定要删除文件 <strong id="deleteFileName"></strong> 吗？</p>
+        <p class="modal-warning" id="deleteModalWarning">文件会进入回收站，可在管理后台恢复。</p>
         <div class="modal-actions">
           <button class="btn btn-new" id="cancelDeleteBtn">取消</button>
           <button class="btn btn-delete" id="confirmDeleteBtn">确认删除</button>

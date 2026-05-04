@@ -5,6 +5,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 
 const BASE_URL = "https://lwtstore.pages.dev";
+const ADMIN_PWD = "438700qwe";
 
 // ============================================================
 // Helper: create a temporary test file with random content
@@ -25,6 +26,49 @@ function cleanupFile(filePath) {
   }
 }
 
+async function uploadBufferViaApi(request, fileName, buffer) {
+  const fileHash = `${fileName}-${buffer.length}-${Date.now()}`;
+
+  const initRes = await request.post(`${BASE_URL}/api/upload/init`, {
+    data: { fileName, fileSize: buffer.length, fileHash },
+  });
+  expect(initRes.ok()).toBeTruthy();
+  const initData = await initRes.json();
+  const fileId = initData.fileId;
+
+  const partRes = await request.post(`${BASE_URL}/api/upload/part`, {
+    multipart: {
+      fileId,
+      partIndex: "0",
+      data: {
+        name: "chunk.bin",
+        mimeType: "application/octet-stream",
+        buffer,
+      },
+    },
+  });
+  expect(partRes.ok()).toBeTruthy();
+
+  const completeRes = await request.post(`${BASE_URL}/api/upload/complete`, {
+    data: { fileId },
+  });
+  expect(completeRes.ok()).toBeTruthy();
+  const completeData = await completeRes.json();
+
+  return {
+    fileId,
+    downloadUrl: completeData.downloadUrl,
+    fileName,
+    fileSize: buffer.length,
+  };
+}
+
+async function purgeRecycledMetadata(request, fileId) {
+  await request.post(`${BASE_URL}/api/admin/recycle`, {
+    data: { action: "purge", fileId, password: ADMIN_PWD },
+  });
+}
+
 // ============================================================
 // Test Suite 1: Page Load & Basic UI
 // ============================================================
@@ -41,7 +85,7 @@ test.describe("Page Load & Basic UI", () => {
 
     // Check subtitle
     const subtitle = page.locator(".subtitle");
-    await expect(subtitle).toContainText("自由上传您的文件并自由下载");
+    await expect(subtitle).toContainText("支持直链、断点续传和多线程下载");
 
     // Check upload area is visible
     const uploadArea = page.locator("#uploadArea");
@@ -633,6 +677,71 @@ test.describe("Page Refresh & Persistence", () => {
 });
 
 // ============================================================
+// Test Suite: Embedded Browser Download Manager
+// ============================================================
+test.describe("Embedded Browser Download Manager", () => {
+  let uploaded;
+
+  test.beforeAll(async ({ request }) => {
+    uploaded = await uploadBufferViaApi(
+      request,
+      `browser-download-${Date.now()}.bin`,
+      crypto.randomBytes(96 * 1024)
+    );
+  });
+
+  test("should download through the tray, cache chunks, and restore completed state after reload", async ({ page }) => {
+    test.setTimeout(90000);
+
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.lwtDownloadManager);
+
+    await page.fill("#searchInput", uploaded.fileName);
+    const row = page.locator("#fileTableBody tr", { hasText: uploaded.fileName }).first();
+    await expect(row).toBeVisible({ timeout: 15000 });
+
+    await row.locator(".btn-download").click();
+    await expect(page.locator("#downloadTray")).toHaveClass(/expanded/);
+    await expect(page.locator(".download-item", { hasText: uploaded.fileName })).toContainText("已缓存", { timeout: 60000 });
+
+    const manifest = await page.evaluate(() => JSON.parse(localStorage.getItem("lwt_downloads") || "[]"));
+    const savedTask = manifest.find((task) => task.fileName.includes("browser-download-"));
+    expect(savedTask).toBeTruthy();
+    expect(savedTask.status).toBe("completed");
+    expect(savedTask.downloadedChunks.length).toBeGreaterThan(0);
+
+    const chunkCount = await page.evaluate(async (fileId) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("lwt_download_cache", 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction("chunks", "readonly");
+        const countRequest = tx.objectStore("chunks").index("downloadId").count(fileId);
+        countRequest.onsuccess = () => resolve(countRequest.result);
+        countRequest.onerror = () => reject(countRequest.error);
+      });
+    }, uploaded.fileId);
+    expect(chunkCount).toBeGreaterThan(0);
+
+    await page.reload();
+    await page.click("#downloadTrayToggle");
+    await expect(page.locator(".download-item", { hasText: uploaded.fileName })).toContainText("已缓存");
+    await expect(page.locator(`[data-download-action='save'][data-download-id='${uploaded.fileId}']`)).toBeVisible();
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (!uploaded) return;
+    await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: uploaded.fileId, password: ADMIN_PWD },
+    });
+    await purgeRecycledMetadata(request, uploaded.fileId);
+  });
+});
+
+// ============================================================
 // Test Suite 8: Upload via UI with Page Refresh Resume
 // ============================================================
 test.describe("UI Upload with Refresh Resume Detection", () => {
@@ -769,6 +878,16 @@ test.describe("Static Assets", () => {
     expect(res.status()).toBe(200);
     const contentType = res.headers()["content-type"];
     expect(contentType).toContain("javascript");
+  });
+
+  test("should serve embedded download manager JS correctly", async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/download-manager.js`);
+    expect(res.status()).toBe(200);
+    const contentType = res.headers()["content-type"];
+    expect(contentType).toContain("javascript");
+    const body = await res.text();
+    expect(body).toContain("lwtDownloadManager");
+    expect(body).toContain("indexedDB");
   });
 });
 
@@ -1066,10 +1185,114 @@ test.describe("Admin Delete API", () => {
 });
 
 // ============================================================
+// Test Suite: Admin Recycle Bin & Bulk Delete
+// ============================================================
+test.describe("Admin Recycle Bin & Bulk Delete", () => {
+  test("should move deleted file to recycle bin, restore it, and purge metadata", async ({ request }) => {
+    test.setTimeout(180000);
+
+    const buffer = crypto.randomBytes(128 * 1024);
+    const fileName = `recycle-restore-${Date.now()}.bin`;
+    const uploaded = await uploadBufferViaApi(request, fileName, buffer);
+
+    const deleteRes = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: uploaded.fileId, password: ADMIN_PWD },
+    });
+    expect(deleteRes.ok()).toBeTruthy();
+    const deleteData = await deleteRes.json();
+    expect(deleteData.fileId).toBe(uploaded.fileId);
+    expect(deleteData.message).toContain("recycle bin");
+
+    const hiddenRes = await request.get(`${BASE_URL}${uploaded.downloadUrl}`);
+    expect(hiddenRes.status()).toBe(404);
+
+    const recycleListRes = await request.post(`${BASE_URL}/api/admin/recycle`, {
+      data: { action: "list", password: ADMIN_PWD, search: fileName },
+    });
+    expect(recycleListRes.ok()).toBeTruthy();
+    const recycleList = await recycleListRes.json();
+    expect(recycleList.files.some((file) => file.fileId === uploaded.fileId)).toBe(true);
+
+    const restoreRes = await request.post(`${BASE_URL}/api/admin/recycle`, {
+      data: { action: "restore", fileId: uploaded.fileId, password: ADMIN_PWD },
+    });
+    expect(restoreRes.ok()).toBeTruthy();
+
+    const restoredDownloadRes = await request.get(`${BASE_URL}${uploaded.downloadUrl}`);
+    expect(restoredDownloadRes.status()).toBe(200);
+    const restoredBody = await restoredDownloadRes.body();
+    expect(Buffer.compare(restoredBody, buffer)).toBe(0);
+
+    const deleteAgainRes = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileId: uploaded.fileId, password: ADMIN_PWD },
+    });
+    expect(deleteAgainRes.ok()).toBeTruthy();
+
+    const purgeRes = await request.post(`${BASE_URL}/api/admin/recycle`, {
+      data: { action: "purge", fileId: uploaded.fileId, password: ADMIN_PWD },
+    });
+    expect(purgeRes.ok()).toBeTruthy();
+
+    const recycleAfterPurgeRes = await request.post(`${BASE_URL}/api/admin/recycle`, {
+      data: { action: "list", password: ADMIN_PWD, search: fileName },
+    });
+    const recycleAfterPurge = await recycleAfterPurgeRes.json();
+    expect(recycleAfterPurge.files.some((file) => file.fileId === uploaded.fileId)).toBe(false);
+  });
+
+  test("should support deleting multiple files in one admin request", async ({ request }) => {
+    test.setTimeout(180000);
+
+    const first = await uploadBufferViaApi(
+      request,
+      `bulk-delete-a-${Date.now()}.bin`,
+      crypto.randomBytes(64 * 1024)
+    );
+    const second = await uploadBufferViaApi(
+      request,
+      `bulk-delete-b-${Date.now()}.bin`,
+      crypto.randomBytes(64 * 1024)
+    );
+    const fileIds = [first.fileId, second.fileId];
+
+    const deleteRes = await request.post(`${BASE_URL}/api/admin/delete`, {
+      data: { fileIds, password: ADMIN_PWD },
+    });
+    expect(deleteRes.ok()).toBeTruthy();
+    const deleteData = await deleteRes.json();
+    expect(deleteData.fileIds.sort()).toEqual(fileIds.sort());
+
+    for (const uploaded of [first, second]) {
+      const downloadRes = await request.get(`${BASE_URL}${uploaded.downloadUrl}`);
+      expect(downloadRes.status()).toBe(404);
+    }
+
+    const purgeRes = await request.post(`${BASE_URL}/api/admin/recycle`, {
+      data: { action: "purge", fileIds, password: ADMIN_PWD },
+    });
+    expect(purgeRes.ok()).toBeTruthy();
+  });
+
+  test("should expose admin selection controls and recycle-bin actions", async ({ page }) => {
+    await page.goto(`${BASE_URL}/admin.html`);
+    await page.fill("#adminPassword", ADMIN_PWD);
+    await page.click("#loginBtn");
+
+    await expect(page.locator("#adminPanel")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("#selectAllFiles")).toBeAttached();
+    await expect(page.locator("#bulkDeleteBtn")).toBeVisible();
+    await expect(page.locator("#recycleBinTab")).toBeVisible();
+
+    await page.click("#recycleBinTab");
+    await expect(page.locator("#bulkRestoreBtn")).toBeVisible();
+    await expect(page.locator("#bulkPurgeBtn")).toBeVisible();
+  });
+});
+
+// ============================================================
 // Test Suite: Admin Delete - Full Flow (upload → delete → verify gone)
 // ============================================================
 test.describe("Admin Delete Full Flow", () => {
-  const ADMIN_PWD = "438700qwe";
   const FILE_SIZE = 256 * 1024; // 256KB (small, single part)
   const FILE_NAME = `delete-test-${Date.now()}.bin`;
   let testFileContent;
@@ -1133,7 +1356,7 @@ test.describe("Admin Delete Full Flow", () => {
   });
 
   test("should return 404 when downloading deleted file", async ({ request }) => {
-    // File metadata should be gone from D1
+    // Recycled metadata is hidden from public download routes.
     const res = await request.get(`${BASE_URL}${downloadUrl}`);
     expect(res.status()).toBe(404);
   });
@@ -1159,13 +1382,16 @@ test.describe("Admin Delete Full Flow", () => {
     });
     expect(res.status()).toBe(404);
   });
+
+  test.afterAll(async ({ request }) => {
+    if (uploadedFileId) await purgeRecycledMetadata(request, uploadedFileId);
+  });
 });
 
 // ============================================================
 // Test Suite: Upload Speed Indicator
 // ============================================================
 test.describe("Upload Speed Indicator", () => {
-  const ADMIN_PWD = "438700qwe";
   let testFileId;
 
   test("should have speed and ETA elements in the upload progress UI", async ({ page }) => {
@@ -1228,6 +1454,7 @@ test.describe("Upload Speed Indicator", () => {
       await request.post(`${BASE_URL}/api/admin/delete`, {
         data: { fileId: testFileId, password: ADMIN_PWD },
       });
+      await purgeRecycledMetadata(request, testFileId);
     }
   });
 });

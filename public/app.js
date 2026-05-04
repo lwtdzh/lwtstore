@@ -469,6 +469,15 @@ async function loadFileList() {
       `;
 
       fileTableBody.appendChild(tr);
+      tr.querySelector(".btn-download").addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.lwtDownloadManager) {
+          window.lwtDownloadManager.startDownload(file);
+        } else {
+          window.location.href = file.downloadUrl;
+        }
+      });
     }
 
     renderPagination(total, page, pageSize, totalPages);
@@ -636,6 +645,8 @@ function showToast(message) {
     setTimeout(() => toast.remove(), 300);
   }, 3000);
 }
+
+window.showToast = showToast;
 
 // ==================== Utility Functions ====================
 

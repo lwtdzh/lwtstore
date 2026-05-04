@@ -17,8 +17,15 @@ const adminPageSizeSelect = document.getElementById("adminPageSizeSelect");
 const adminPrevPageBtn = document.getElementById("adminPrevPageBtn");
 const adminNextPageBtn = document.getElementById("adminNextPageBtn");
 const adminPageNumbers = document.getElementById("adminPageNumbers");
+const activeFilesTab = document.getElementById("activeFilesTab");
+const recycleBinTab = document.getElementById("recycleBinTab");
+const bulkDeleteBtn = document.getElementById("bulkDeleteBtn");
+const bulkRestoreBtn = document.getElementById("bulkRestoreBtn");
+const bulkPurgeBtn = document.getElementById("bulkPurgeBtn");
+const selectAllFiles = document.getElementById("selectAllFiles");
 const deleteModal = document.getElementById("deleteModal");
-const deleteFileName = document.getElementById("deleteFileName");
+const deleteModalText = document.getElementById("deleteModalText");
+const deleteModalWarning = document.getElementById("deleteModalWarning");
 const cancelDeleteBtn = document.getElementById("cancelDeleteBtn");
 const confirmDeleteBtn = document.getElementById("confirmDeleteBtn");
 
@@ -27,7 +34,10 @@ let adminCurrentPage = 1;
 let adminCurrentPageSize = 20;
 let adminCurrentSearch = "";
 let adminSearchDebounceTimer = null;
-let pendingDeleteFileId = null;
+let adminView = "active";
+let selectedFileIds = new Set();
+let pendingAction = null;
+let pendingFileIds = [];
 
 // ==================== Initialization ====================
 
@@ -41,6 +51,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   setupLogin();
   setupAdminPagination();
+  setupAdminToolbar();
   setupDeleteModal();
 });
 
@@ -133,12 +144,52 @@ function setupAdminPagination() {
   });
 }
 
+function setupAdminToolbar() {
+  activeFilesTab.addEventListener("click", () => switchAdminView("active"));
+  recycleBinTab.addEventListener("click", () => switchAdminView("recycle"));
+
+  selectAllFiles.addEventListener("change", () => {
+    const checkboxes = adminFileTableBody.querySelectorAll(".admin-file-checkbox");
+    selectedFileIds = new Set();
+
+    checkboxes.forEach((checkbox) => {
+      checkbox.checked = selectAllFiles.checked;
+      if (checkbox.checked) selectedFileIds.add(checkbox.value);
+    });
+
+    updateBulkActionState();
+  });
+
+  bulkDeleteBtn.addEventListener("click", () => showBulkActionConfirm("delete"));
+  bulkRestoreBtn.addEventListener("click", () => showBulkActionConfirm("restore"));
+  bulkPurgeBtn.addEventListener("click", () => showBulkActionConfirm("purge"));
+}
+
+function switchAdminView(nextView) {
+  if (adminView === nextView) return;
+
+  adminView = nextView;
+  adminCurrentPage = 1;
+  clearSelection();
+
+  activeFilesTab.classList.toggle("active", adminView === "active");
+  recycleBinTab.classList.toggle("active", adminView === "recycle");
+  bulkDeleteBtn.style.display = adminView === "active" ? "inline-block" : "none";
+  bulkRestoreBtn.style.display = adminView === "recycle" ? "inline-block" : "none";
+  bulkPurgeBtn.style.display = adminView === "recycle" ? "inline-block" : "none";
+
+  loadAdminFileList();
+}
+
 async function loadAdminFileList() {
   try {
     adminFileListLoading.style.display = "block";
+    adminFileListLoading.textContent = "加载中...";
     adminEmptyState.style.display = "none";
     adminFileTable.style.display = "none";
     adminPagination.style.display = "none";
+    adminFileTableBody.innerHTML = "";
+    clearSelection();
 
     const params = new URLSearchParams({
       page: adminCurrentPage,
@@ -148,7 +199,19 @@ async function loadAdminFileList() {
       params.set("search", adminCurrentSearch);
     }
 
-    const res = await fetch(`/api/files?${params}`);
+    const res = adminView === "active"
+      ? await fetch(`/api/files?${params}`)
+      : await fetch("/api/admin/recycle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "list",
+          password: adminPwd,
+          page: adminCurrentPage,
+          pageSize: adminCurrentPageSize,
+          search: adminCurrentSearch,
+        }),
+      });
     if (!res.ok) throw new Error("Failed to load file list");
 
     const data = await res.json();
@@ -161,38 +224,109 @@ async function loadAdminFileList() {
       if (adminCurrentSearch) {
         adminEmptyState.textContent = `没有找到包含"${adminCurrentSearch}"的文件`;
       } else {
-        adminEmptyState.textContent = "暂无文件";
+        adminEmptyState.textContent = adminView === "active" ? "暂无文件" : "回收站为空";
       }
       renderAdminPagination(total, page, pageSize, totalPages);
       return;
     }
 
     adminFileTable.style.display = "table";
-    adminFileTableBody.innerHTML = "";
+    const dateHeader = adminFileTable.querySelector("thead th:nth-child(4)");
+    if (dateHeader) dateHeader.textContent = adminView === "active" ? "上传时间" : "删除时间";
 
     for (const file of files) {
       const tr = document.createElement("tr");
       tr.setAttribute("data-file-id", file.fileId);
+      const actionDate = adminView === "active" ? file.createdAt : (file.deletedAt || file.createdAt);
 
       tr.innerHTML = `
+        <td class="select-cell">
+          <input type="checkbox" class="admin-file-checkbox" value="${escapeHtml(file.fileId)}" aria-label="选择 ${escapeHtml(file.fileName)}">
+        </td>
         <td class="file-name-cell" title="${escapeHtml(file.fileName)}">${escapeHtml(file.fileName)}</td>
         <td class="file-size-cell">${formatSize(file.fileSize)}</td>
-        <td class="file-date-cell">${formatDate(file.createdAt)}</td>
+        <td class="file-date-cell">${formatDate(actionDate)}</td>
         <td>
           <div class="file-actions">
-            <a href="${file.downloadUrl}" class="btn btn-download" download>下载</a>
-            <button class="btn btn-delete" onclick="showDeleteConfirm('${file.fileId}', '${escapeHtml(file.fileName)}')">删除</button>
+            ${renderActionButtons(file)}
           </div>
         </td>
       `;
 
       adminFileTableBody.appendChild(tr);
+      tr.querySelector(".admin-file-checkbox").addEventListener("change", handleRowSelectionChange);
+
+      if (adminView === "active") {
+        tr.querySelector(".admin-row-delete").addEventListener("click", () => {
+          showDeleteConfirm(file.fileId, file.fileName);
+        });
+      } else {
+        tr.querySelector(".admin-row-restore").addEventListener("click", () => {
+          showSingleActionConfirm("restore", file.fileId, file.fileName);
+        });
+        tr.querySelector(".admin-row-purge").addEventListener("click", () => {
+          showSingleActionConfirm("purge", file.fileId, file.fileName);
+        });
+      }
     }
 
+    updateBulkActionState();
     renderAdminPagination(total, page, pageSize, totalPages);
   } catch (err) {
     adminFileListLoading.textContent = "加载失败，请刷新页面重试";
   }
+}
+
+function renderActionButtons(file) {
+  if (adminView === "recycle") {
+    return `
+      <button class="btn btn-copy-small admin-row-restore" type="button">恢复</button>
+      <button class="btn btn-delete admin-row-purge" type="button">永久移除</button>
+    `;
+  }
+
+  return `
+    <a href="${file.downloadUrl}" class="btn btn-download" download>下载</a>
+    <button class="btn btn-delete admin-row-delete" type="button">删除</button>
+  `;
+}
+
+function handleRowSelectionChange(e) {
+  if (e.target.checked) {
+    selectedFileIds.add(e.target.value);
+  } else {
+    selectedFileIds.delete(e.target.value);
+  }
+
+  updateBulkActionState();
+}
+
+function clearSelection() {
+  selectedFileIds = new Set();
+  if (selectAllFiles) {
+    selectAllFiles.checked = false;
+    selectAllFiles.indeterminate = false;
+  }
+  updateBulkActionState();
+}
+
+function updateBulkActionState() {
+  const selectedCount = selectedFileIds.size;
+  const checkboxes = adminFileTableBody.querySelectorAll(".admin-file-checkbox");
+
+  if (selectAllFiles) {
+    selectAllFiles.checked = checkboxes.length > 0 && selectedCount === checkboxes.length;
+    selectAllFiles.indeterminate = selectedCount > 0 && selectedCount < checkboxes.length;
+    selectAllFiles.disabled = checkboxes.length === 0;
+  }
+
+  bulkDeleteBtn.disabled = selectedCount === 0;
+  bulkRestoreBtn.disabled = selectedCount === 0;
+  bulkPurgeBtn.disabled = selectedCount === 0;
+
+  bulkDeleteBtn.textContent = selectedCount > 0 ? `批量删除 (${selectedCount})` : "批量删除";
+  bulkRestoreBtn.textContent = selectedCount > 0 ? `批量恢复 (${selectedCount})` : "批量恢复";
+  bulkPurgeBtn.textContent = selectedCount > 0 ? `永久移除 (${selectedCount})` : "永久移除";
 }
 
 function renderAdminPagination(total, page, pageSize, totalPages) {
@@ -242,28 +376,72 @@ function setupDeleteModal() {
 }
 
 window.showDeleteConfirm = function (fileId, fileName) {
-  pendingDeleteFileId = fileId;
-  deleteFileName.textContent = fileName;
-  deleteModal.style.display = "flex";
+  showSingleActionConfirm("delete", fileId, fileName);
 };
+
+function showSingleActionConfirm(action, fileId, fileName) {
+  pendingAction = action;
+  pendingFileIds = [fileId];
+  configureActionModal(action, fileName, 1);
+  deleteModal.style.display = "flex";
+}
+
+function showBulkActionConfirm(action) {
+  const ids = Array.from(selectedFileIds);
+  if (ids.length === 0) return;
+
+  pendingAction = action;
+  pendingFileIds = ids;
+  configureActionModal(action, "", ids.length);
+  deleteModal.style.display = "flex";
+}
+
+function configureActionModal(action, fileName, count) {
+  if (action === "delete") {
+    deleteModalText.innerHTML = count === 1
+      ? `确定要删除文件 <strong id="deleteFileName">${escapeHtml(fileName)}</strong> 吗？`
+      : `确定要删除选中的 ${count} 个文件吗？`;
+    deleteModalWarning.textContent = "文件会进入回收站，可在管理后台恢复。";
+    confirmDeleteBtn.textContent = "确认删除";
+    return;
+  }
+
+  if (action === "restore") {
+    deleteModalText.innerHTML = count === 1
+      ? `确定要恢复文件 <strong id="deleteFileName">${escapeHtml(fileName)}</strong> 吗？`
+      : `确定要恢复选中的 ${count} 个文件吗？`;
+    deleteModalWarning.textContent = "恢复后文件会重新出现在公开文件列表。";
+    confirmDeleteBtn.textContent = "确认恢复";
+    return;
+  }
+
+  deleteModalText.innerHTML = count === 1
+    ? `确定要永久移除文件 <strong id="deleteFileName">${escapeHtml(fileName)}</strong> 吗？`
+    : `确定要永久移除选中的 ${count} 个文件吗？`;
+  deleteModalWarning.textContent = "只会移除数据库 metadata，不会删除 GitHub 中的文件分片。此操作不可恢复。";
+  confirmDeleteBtn.textContent = "永久移除";
+}
 
 function hideDeleteModal() {
   deleteModal.style.display = "none";
-  pendingDeleteFileId = null;
+  pendingAction = null;
+  pendingFileIds = [];
 }
 
 async function confirmDelete() {
-  if (!pendingDeleteFileId) return;
+  if (!pendingAction || pendingFileIds.length === 0) return;
 
   confirmDeleteBtn.disabled = true;
-  confirmDeleteBtn.textContent = "删除中...";
+  const originalText = confirmDeleteBtn.textContent;
+  confirmDeleteBtn.textContent = getActionProgressText(pendingAction);
 
   try {
-    const res = await fetch("/api/admin/delete", {
+    const res = await fetch(pendingAction === "delete" ? "/api/admin/delete" : "/api/admin/recycle", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        fileId: pendingDeleteFileId,
+        action: pendingAction === "delete" ? undefined : pendingAction,
+        fileIds: pendingFileIds,
         password: adminPwd,
       }),
     });
@@ -275,15 +453,31 @@ async function confirmDelete() {
       return;
     }
 
-    showToast("文件已删除");
+    showToast(getActionSuccessText(pendingAction, pendingFileIds.length));
     hideDeleteModal();
     loadAdminFileList();
   } catch (err) {
-    showToast(`删除失败: ${err.message}`);
+    showToast(`${getActionName(pendingAction)}失败: ${err.message}`);
   } finally {
     confirmDeleteBtn.disabled = false;
-    confirmDeleteBtn.textContent = "确认删除";
+    confirmDeleteBtn.textContent = originalText;
   }
+}
+
+function getActionName(action) {
+  if (action === "restore") return "恢复";
+  if (action === "purge") return "永久移除";
+  return "删除";
+}
+
+function getActionProgressText(action) {
+  return `${getActionName(action)}中...`;
+}
+
+function getActionSuccessText(action, count) {
+  if (action === "restore") return count === 1 ? "文件已恢复" : `${count} 个文件已恢复`;
+  if (action === "purge") return count === 1 ? "文件 metadata 已永久移除" : `${count} 个文件 metadata 已永久移除`;
+  return count === 1 ? "文件已移入回收站" : `${count} 个文件已移入回收站`;
 }
 
 // ==================== Utility Functions ====================

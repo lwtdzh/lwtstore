@@ -30,7 +30,8 @@ export async function ensureTables(db) {
         totalParts INTEGER NOT NULL DEFAULT 0,
         downloadUrl TEXT NOT NULL DEFAULT '',
         createdAt TEXT NOT NULL DEFAULT '',
-        completedAt TEXT
+        completedAt TEXT,
+        deletedAt TEXT
       )
     `),
     db.prepare(`
@@ -58,7 +59,22 @@ export async function ensureTables(db) {
     `),
   ]);
 
+  await ensureColumn(db, "files", "deletedAt", "TEXT");
+  await db.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_files_status_deleted ON files(status, deletedAt DESC)
+  `).run();
+
   tablesEnsured = true;
+}
+
+async function ensureColumn(db, tableName, columnName, columnType) {
+  try {
+    await db.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`).run();
+  } catch (err) {
+    if (!String(err.message || err).toLowerCase().includes("duplicate column")) {
+      throw err;
+    }
+  }
 }
 
 /**
@@ -99,6 +115,7 @@ export async function getFile(db, fileId) {
     downloadUrl: fileRow.downloadUrl,
     createdAt: fileRow.createdAt,
     completedAt: fileRow.completedAt || null,
+    deletedAt: fileRow.deletedAt || null,
   };
 }
 
@@ -117,8 +134,8 @@ export async function setFile(db, fileId, data) {
   // Upsert the file row
   statements.push(
     db.prepare(`
-      INSERT OR REPLACE INTO files (fileId, fileName, fileSize, fileHash, status, bucketRepo, totalParts, downloadUrl, createdAt, completedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO files (fileId, fileName, fileSize, fileHash, status, bucketRepo, totalParts, downloadUrl, createdAt, completedAt, deletedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       fileId,
       data.fileName || "",
@@ -129,7 +146,8 @@ export async function setFile(db, fileId, data) {
       data.totalParts || 0,
       data.downloadUrl || "",
       data.createdAt || "",
-      data.completedAt || null
+      data.completedAt || null,
+      data.deletedAt || null
     )
   );
 
@@ -213,20 +231,53 @@ export async function deleteFile(db, fileId) {
 }
 
 /**
+ * Move a finished file into the admin-only recycle bin.
+ * The GitHub-backed parts are intentionally left untouched.
+ * @param {D1Database} db - D1 database binding
+ * @param {string} fileId - File ID
+ * @param {string|null} deletedAt - Deletion timestamp (ISO string)
+ */
+export async function moveFileToRecycleBin(db, fileId, deletedAt = null) {
+  await ensureTables(db);
+
+  const timestamp = deletedAt || new Date().toISOString();
+  const result = await db.prepare(
+    "UPDATE files SET status = 'deleted', deletedAt = ? WHERE fileId = ? AND status = 'finished'"
+  ).bind(timestamp, fileId).run();
+
+  return result.meta?.changes || 0;
+}
+
+/**
+ * Restore a recycled file back to the public finished file list.
+ * @param {D1Database} db - D1 database binding
+ * @param {string} fileId - File ID
+ */
+export async function restoreFileFromRecycleBin(db, fileId) {
+  await ensureTables(db);
+
+  const result = await db.prepare(
+    "UPDATE files SET status = 'finished', deletedAt = NULL WHERE fileId = ? AND status = 'deleted'"
+  ).bind(fileId).run();
+
+  return result.meta?.changes || 0;
+}
+
+/**
  * List files with pagination and optional fuzzy search.
  * Uses SQL LIKE for search and LIMIT/OFFSET for pagination.
  * Much faster than the old KV full-scan approach.
  *
  * @param {D1Database} db - D1 database binding
- * @param {object} options - { page, pageSize, search }
+ * @param {object} options - { page, pageSize, search, status }
  * @returns {object} - { files, total, page, pageSize, totalPages }
  */
-export async function listFilesPaged(db, { page = 1, pageSize = 20, search = "" } = {}) {
+export async function listFilesPaged(db, { page = 1, pageSize = 20, search = "", status = "finished" } = {}) {
   await ensureTables(db);
 
-  let countSql = "SELECT COUNT(*) as total FROM files WHERE status = 'finished'";
-  let listSql = "SELECT fileId, fileName, fileSize, fileHash, status, bucketRepo, totalParts, downloadUrl, createdAt, completedAt FROM files WHERE status = 'finished'";
-  const bindings = [];
+  let countSql = "SELECT COUNT(*) as total FROM files WHERE status = ?";
+  let listSql = "SELECT fileId, fileName, fileSize, fileHash, status, bucketRepo, totalParts, downloadUrl, createdAt, completedAt, deletedAt FROM files WHERE status = ?";
+  const bindings = [status];
 
   if (search) {
     const searchPattern = `%${search}%`;
@@ -243,8 +294,8 @@ export async function listFilesPaged(db, { page = 1, pageSize = 20, search = "" 
   const safePage = Math.min(Math.max(1, page), totalPages);
   const offset = (safePage - 1) * pageSize;
 
-  // Get paginated results, sorted by createdAt descending
-  listSql += " ORDER BY createdAt DESC LIMIT ? OFFSET ?";
+  const sortColumn = status === "deleted" ? "COALESCE(deletedAt, createdAt)" : "createdAt";
+  listSql += ` ORDER BY ${sortColumn} DESC LIMIT ? OFFSET ?`;
   const listBindings = [...bindings, pageSize, offset];
 
   const listResult = await db.prepare(listSql).bind(...listBindings).all();
@@ -262,6 +313,7 @@ export async function listFilesPaged(db, { page = 1, pageSize = 20, search = "" 
     downloadUrl: row.downloadUrl,
     createdAt: row.createdAt,
     completedAt: row.completedAt || null,
+    deletedAt: row.deletedAt || null,
   }));
 
   return { files, total, page: safePage, pageSize, totalPages };

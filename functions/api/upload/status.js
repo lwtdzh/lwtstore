@@ -13,7 +13,7 @@ export async function onRequestGet(context) {
     const db = context.env.FILES;
 
     const metadata = await getFile(db, fileId);
-    if (!metadata) {
+    if (!metadata || metadata.status === "deleted") {
       return jsonResponse({ error: "File not found." }, 404);
     }
 
