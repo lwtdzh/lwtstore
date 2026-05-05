@@ -1524,7 +1524,8 @@ test.describe("Upload Speed Indicator", () => {
     // Wait for upload progress to appear
     await page.waitForSelector("#uploadProgress", { state: "visible", timeout: 10000 });
     await expect(page.locator("#downloadTray")).toHaveClass(/expanded/);
-    await expect(page.locator(".download-item", { hasText: path.basename(tmpFile) })).toContainText("上传");
+    const uploadItem = page.locator(".download-item", { hasText: path.basename(tmpFile) });
+    await expect(uploadItem).toContainText("上传");
 
     // Poll for speed text to appear (it shows after >=500ms of data transfer)
     const speedEl = page.locator("#uploadSpeed");
