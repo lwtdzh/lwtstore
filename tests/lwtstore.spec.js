@@ -768,6 +768,61 @@ test.describe("Embedded Browser Download Manager", () => {
     await page.evaluate(() => localStorage.removeItem("lwt_downloads"));
   });
 
+  test("should show download speed in the tray while downloading", async ({ page }) => {
+    const fileId = `tray-speed-download-${Date.now()}`;
+    const fileName = `${fileId}.bin`;
+    const fileSize = 8 * 1024 * 1024;
+
+    await page.route(`**/api/download/${fileId}`, async (route) => {
+      const request = route.request();
+      if (request.method() === "HEAD") {
+        await route.fulfill({
+          status: 200,
+          headers: {
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": `attachment; filename="${fileName}"`,
+            "Content-Length": String(fileSize),
+          },
+        });
+        return;
+      }
+
+      const range = request.headers().range || "";
+      const match = range.match(/bytes=(\d+)-(\d*)/);
+      const start = match ? Number(match[1]) : 0;
+      const end = match && match[2] ? Number(match[2]) : fileSize - 1;
+      const length = end - start + 1;
+      await new Promise((resolve) => setTimeout(resolve, start === 0 ? 700 : 3000));
+
+      await route.fulfill({
+        status: 206,
+        headers: {
+          "Accept-Ranges": "bytes",
+          "Content-Length": String(length),
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+        },
+        body: Buffer.alloc(length, 7),
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.lwtDownloadManager);
+    await page.evaluate(({ fileId, fileName, fileSize }) => {
+      window.lwtDownloadManager.startDownload({
+        fileId,
+        fileName,
+        fileSize,
+        downloadUrl: `/api/download/${fileId}`,
+      });
+    }, { fileId, fileName, fileSize });
+
+    const item = page.locator(".download-item", { hasText: fileName });
+    await expect(item.locator(".transfer-speed")).toContainText(/速度 .*(B\/s|KB\/s|MB\/s)/, { timeout: 7000 });
+    await expect(item).toContainText("已缓存", { timeout: 10000 });
+    await item.locator(`[data-download-action='cancel'][data-download-id='${fileId}']`).click();
+    await expect(item).toHaveCount(0);
+  });
+
   test.afterAll(async ({ request }) => {
     if (!uploaded) return;
     await request.post(`${BASE_URL}/api/admin/delete`, {
@@ -1478,6 +1533,7 @@ test.describe("Upload Speed Indicator", () => {
     // Verify speed text contains a speed unit
     const speedText = await speedEl.textContent();
     expect(speedText).toMatch(/⚡.*(B\/s|KB\/s|MB\/s)/);
+    await expect(uploadItem.locator(".transfer-speed")).toContainText(/速度 .*(B\/s|KB\/s|MB\/s)/, { timeout: 30000 });
 
     // Wait for upload to complete
     await page.waitForSelector("#uploadComplete", { state: "visible", timeout: 90000 });

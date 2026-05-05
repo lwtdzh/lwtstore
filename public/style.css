@@ -530,13 +530,20 @@ footer {
 }
 
 .download-meta,
-.download-retry {
+.download-retry,
+.transfer-speed {
   color: var(--text-secondary);
   font-size: 0.78rem;
 }
 
-.download-retry {
+.download-retry,
+.transfer-speed {
   margin-top: 5px;
+}
+
+.transfer-speed {
+  color: var(--primary);
+  font-weight: 600;
 }
 
 .download-controls {

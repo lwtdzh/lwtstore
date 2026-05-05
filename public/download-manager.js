@@ -14,6 +14,7 @@
   const MAX_THREADS = 8;
   const CHUNK_SIZE = 2 * 1024 * 1024;
   const RETRY_WAIT_MS = 1000;
+  const SPEED_SAMPLE_MS = 500;
 
   const state = {
     tasks: new Map(),
@@ -77,6 +78,7 @@
       task.error = "";
       task.retryMessage = "";
       task.updatedAt = new Date().toISOString();
+      resetTransferSpeed(task, getTransferredBytes(task));
       saveTasks();
       pumpDownloadTask(task);
     }
@@ -123,6 +125,7 @@
       error: "",
       updatedAt: now,
     });
+    resetTransferSpeed(task, getTransferredBytes(task));
 
     saveTasks();
     expandTray();
@@ -143,6 +146,13 @@
       task.uploadedParts = [...new Set(patch.uploadedParts)].sort((a, b) => a - b);
     }
 
+    const hasUploadedBytes = Object.prototype.hasOwnProperty.call(patch, "uploadedBytes");
+    if (task.status === "running" && hasUploadedBytes) {
+      updateTransferSpeed(task, getTransferredBytes(task));
+    } else if (task.status !== "running" || Object.prototype.hasOwnProperty.call(patch, "retryMessage")) {
+      clearTransferSpeed(task);
+    }
+
     saveTasks();
     renderTray();
   }
@@ -154,6 +164,7 @@
     task.status = "needs-file";
     task.retryMessage = message;
     task.updatedAt = new Date().toISOString();
+    clearTransferSpeed(task);
     saveTasks();
     renderTray();
   }
@@ -169,6 +180,7 @@
       error: "",
       updatedAt: new Date().toISOString(),
     });
+    clearTransferSpeed(task);
     saveTasks();
     renderTray();
     showTransferToast(`${task.fileName} 上传完成`);
@@ -270,6 +282,7 @@
           downloadedChunks: Array.isArray(task.downloadedChunks) ? task.downloadedChunks : [],
           uploadedParts: Array.isArray(task.uploadedParts) ? task.uploadedParts : [],
         };
+        resetTransferSpeed(restored, getTransferredBytes(restored), 0);
         return [restored.id, restored];
       }));
     } catch (err) {
@@ -286,7 +299,7 @@
         const id = uploadTaskId(fileHash);
         if (state.tasks.has(id)) continue;
 
-        state.tasks.set(id, {
+        const restored = {
           type: "upload",
           id,
           fileHash,
@@ -304,7 +317,9 @@
           downloadUrl: upload.downloadUrl || "",
           createdAt: upload.createdAt || new Date().toISOString(),
           updatedAt: upload.updatedAt || new Date().toISOString(),
-        });
+        };
+        resetTransferSpeed(restored, getTransferredBytes(restored), 0);
+        state.tasks.set(id, restored);
       }
     } catch (err) {
       // Ignore corrupt legacy upload state.
@@ -423,6 +438,7 @@
         task.downloadedChunks.push(chunkIndex);
         task.downloadedChunks.sort((a, b) => a - b);
       }
+      updateTransferSpeed(task, getTransferredBytes(task));
       task.retryMessage = "";
       task.updatedAt = new Date().toISOString();
 
@@ -477,6 +493,7 @@
         attempt++;
         const backoffMs = RETRY_WAIT_MS;
         task.retryMessage = `分片 ${chunkIndex + 1} 失败(${err.message})，${Math.round(backoffMs / 1000)}秒后重试`;
+        clearTransferSpeed(task);
         saveTasks();
         renderTray();
         await sleep(backoffMs, signal);
@@ -499,6 +516,7 @@
     task.error = "";
     task.retryMessage = "";
     task.updatedAt = new Date().toISOString();
+    clearTransferSpeed(task);
     saveTasks();
     renderTray();
     showTransferToast(`${task.fileName} 已下载到浏览器缓存`);
@@ -510,6 +528,7 @@
 
     task.status = "paused";
     task.retryMessage = "已暂停";
+    clearTransferSpeed(task);
     abortTaskControllers(taskId);
     saveTasks();
     renderTray();
@@ -522,6 +541,7 @@
     task.status = "running";
     task.error = "";
     task.retryMessage = "";
+    resetTransferSpeed(task, getTransferredBytes(task));
     saveTasks();
     renderTray();
     pumpDownloadTask(task);
@@ -557,6 +577,61 @@
     saveTasks();
     renderTray();
     if (task.status === "running") pumpDownloadTask(task);
+  }
+
+  function getTransferredBytes(task) {
+    return (task.type || "download") === "upload"
+      ? Math.min(task.fileSize || 0, task.uploadedBytes || 0)
+      : getDownloadedBytes(task);
+  }
+
+  function resetTransferSpeed(task, transferredBytes = 0, timestamp = Date.now()) {
+    if (!task) return;
+
+    task.speedBytesPerSecond = 0;
+    task.speedLastBytes = Number(transferredBytes || 0);
+    task.speedLastTime = timestamp;
+  }
+
+  function clearTransferSpeed(task) {
+    if (!task) return;
+
+    task.speedBytesPerSecond = 0;
+    task.speedLastBytes = getTransferredBytes(task);
+    task.speedLastTime = 0;
+  }
+
+  function updateTransferSpeed(task, transferredBytes) {
+    if (!task) return;
+
+    const now = Date.now();
+    const currentBytes = Number(transferredBytes || 0);
+    if (!task.speedLastTime) {
+      resetTransferSpeed(task, currentBytes, now);
+      return;
+    }
+
+    const elapsedMs = now - task.speedLastTime;
+    if (elapsedMs < SPEED_SAMPLE_MS) return;
+
+    const bytesDelta = Math.max(0, currentBytes - Number(task.speedLastBytes || 0));
+    const instantSpeed = elapsedMs > 0 ? (bytesDelta / elapsedMs) * 1000 : 0;
+    task.speedBytesPerSecond = task.speedBytesPerSecond > 0
+      ? 0.3 * instantSpeed + 0.7 * task.speedBytesPerSecond
+      : instantSpeed;
+    task.speedLastBytes = currentBytes;
+    task.speedLastTime = now;
+  }
+
+  function getSpeedDisplay(task, transferredBytes) {
+    if (task.status !== "running") return "";
+
+    const speed = Number(task.speedBytesPerSecond || 0);
+    if (speed <= 0) return "速度 计算中";
+
+    const remaining = Math.max(0, (task.fileSize || 0) - transferredBytes);
+    const eta = remaining > 0 ? ` · ${formatEta(remaining / speed)}` : "";
+    return `速度 ${formatSpeed(speed)}${eta}`;
   }
 
   async function saveCompletedDownload(taskId) {
@@ -737,12 +812,14 @@
   }
 
   function renderDownloadTask(task) {
+    const downloadedBytes = getDownloadedBytes(task);
     const percent = task.fileSize > 0
-      ? Math.round((getDownloadedBytes(task) / task.fileSize) * 100)
+      ? Math.round((downloadedBytes / task.fileSize) * 100)
       : 0;
     const isRunning = task.status === "running";
     const isCompleted = task.status === "completed";
     const statusText = getDownloadStatusText(task);
+    const speedText = getSpeedDisplay(task, downloadedBytes);
 
     return `
       <div class="download-item" data-task-status="${task.status}" data-task-type="download">
@@ -754,9 +831,10 @@
           <div class="download-progress-fill" style="width: ${Math.min(100, percent)}%"></div>
         </div>
         <div class="download-meta">
-          <span>${formatSize(getDownloadedBytes(task))} / ${formatSize(task.fileSize)}</span>
+          <span>${formatSize(downloadedBytes)} / ${formatSize(task.fileSize)}</span>
           <span>${statusText}</span>
         </div>
+        ${speedText ? `<div class="transfer-speed">${escapeHtml(speedText)}</div>` : ""}
         ${task.retryMessage ? `<div class="download-retry">${escapeHtml(task.retryMessage)}</div>` : ""}
         <div class="download-controls">
           <label>线程
@@ -780,6 +858,7 @@
     const isRunning = task.status === "running";
     const isCompleted = task.status === "completed";
     const statusText = getUploadStatusText(task);
+    const speedText = getSpeedDisplay(task, transferredBytes);
 
     return `
       <div class="download-item" data-task-status="${task.status}" data-task-type="upload">
@@ -794,6 +873,7 @@
           <span>${formatSize(transferredBytes)} / ${formatSize(task.fileSize)}</span>
           <span>${statusText}</span>
         </div>
+        ${speedText ? `<div class="transfer-speed">${escapeHtml(speedText)}</div>` : ""}
         ${task.retryMessage ? `<div class="download-retry">${escapeHtml(task.retryMessage)}</div>` : ""}
         <div class="download-controls">
           ${isCompleted
@@ -928,6 +1008,27 @@
     const k = 1024;
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${units[i]}`;
+  }
+
+  function formatSpeed(bytesPerSecond) {
+    if (!bytesPerSecond) return "0 B/s";
+    if (bytesPerSecond < 1024) return `${bytesPerSecond.toFixed(0)} B/s`;
+    if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+    return `${(bytesPerSecond / (1024 * 1024)).toFixed(2)} MB/s`;
+  }
+
+  function formatEta(seconds) {
+    if (!isFinite(seconds) || seconds <= 0) return "";
+    if (seconds < 60) return `剩余 ${Math.ceil(seconds)} 秒`;
+    if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = Math.ceil(seconds % 60);
+      return `剩余 ${minutes} 分 ${secs} 秒`;
+    }
+
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.ceil((seconds % 3600) / 60);
+    return `剩余 ${hours} 时 ${minutes} 分`;
   }
 
   function showTransferToast(message) {
