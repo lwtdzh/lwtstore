@@ -1,4 +1,4 @@
-// POST /api/admin/recycle - List, restore, or permanently purge recycled metadata.
+// POST /api/admin/recycle - List, restore, or permanently purge recycled file records.
 import {
   deleteFile,
   getFile,
@@ -99,8 +99,8 @@ export async function onRequestPost(context) {
       return jsonResponse({
         success: true,
         message: purged.length === 1
-          ? `File "${purged[0].fileName}" permanently removed from metadata`
-          : `${purged.length} files permanently removed from metadata`,
+          ? `File "${purged[0].fileName}" permanently removed`
+          : `${purged.length} files permanently removed`,
         fileId: purged.length === 1 ? purged[0].fileId : undefined,
         fileIds: purged.map((file) => file.fileId),
         errors,

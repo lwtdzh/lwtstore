@@ -35,6 +35,7 @@ let adminCurrentPageSize = 20;
 let adminCurrentSearch = "";
 let adminSearchDebounceTimer = null;
 let adminView = "active";
+let adminListRequestId = 0;
 let selectedFileIds = new Set();
 let pendingAction = null;
 let pendingFileIds = [];
@@ -182,6 +183,12 @@ function switchAdminView(nextView) {
 }
 
 async function loadAdminFileList() {
+  const requestId = ++adminListRequestId;
+  const requestView = adminView;
+  const requestPage = adminCurrentPage;
+  const requestPageSize = adminCurrentPageSize;
+  const requestSearch = adminCurrentSearch;
+
   try {
     adminFileListLoading.style.display = "block";
     adminFileListLoading.textContent = "加载中...";
@@ -192,14 +199,14 @@ async function loadAdminFileList() {
     clearSelection();
 
     const params = new URLSearchParams({
-      page: adminCurrentPage,
-      pageSize: adminCurrentPageSize,
+      page: requestPage,
+      pageSize: requestPageSize,
     });
-    if (adminCurrentSearch) {
-      params.set("search", adminCurrentSearch);
+    if (requestSearch) {
+      params.set("search", requestSearch);
     }
 
-    const res = adminView === "active"
+    const res = requestView === "active"
       ? await fetch(`/api/files?${params}`)
       : await fetch("/api/admin/recycle", {
         method: "POST",
@@ -207,24 +214,26 @@ async function loadAdminFileList() {
         body: JSON.stringify({
           action: "list",
           password: adminPwd,
-          page: adminCurrentPage,
-          pageSize: adminCurrentPageSize,
-          search: adminCurrentSearch,
+          page: requestPage,
+          pageSize: requestPageSize,
+          search: requestSearch,
         }),
       });
+    if (!isLatestAdminListRequest(requestId, requestView, requestPage, requestPageSize, requestSearch)) return;
     if (!res.ok) throw new Error("Failed to load file list");
 
     const data = await res.json();
+    if (!isLatestAdminListRequest(requestId, requestView, requestPage, requestPageSize, requestSearch)) return;
     const { files, total, page, pageSize, totalPages } = data;
 
     adminFileListLoading.style.display = "none";
 
     if (files.length === 0) {
       adminEmptyState.style.display = "block";
-      if (adminCurrentSearch) {
-        adminEmptyState.textContent = `没有找到包含"${adminCurrentSearch}"的文件`;
+      if (requestSearch) {
+        adminEmptyState.textContent = `没有找到包含"${requestSearch}"的文件`;
       } else {
-        adminEmptyState.textContent = adminView === "active" ? "暂无文件" : "回收站为空";
+        adminEmptyState.textContent = requestView === "active" ? "暂无文件" : "回收站为空";
       }
       renderAdminPagination(total, page, pageSize, totalPages);
       return;
@@ -232,12 +241,12 @@ async function loadAdminFileList() {
 
     adminFileTable.style.display = "table";
     const dateHeader = adminFileTable.querySelector("thead th:nth-child(4)");
-    if (dateHeader) dateHeader.textContent = adminView === "active" ? "上传时间" : "删除时间";
+    if (dateHeader) dateHeader.textContent = requestView === "active" ? "上传时间" : "删除时间";
 
     for (const file of files) {
       const tr = document.createElement("tr");
       tr.setAttribute("data-file-id", file.fileId);
-      const actionDate = adminView === "active" ? file.createdAt : (file.deletedAt || file.createdAt);
+      const actionDate = requestView === "active" ? file.createdAt : (file.deletedAt || file.createdAt);
 
       tr.innerHTML = `
         <td class="select-cell">
@@ -248,7 +257,7 @@ async function loadAdminFileList() {
         <td class="file-date-cell">${formatDate(actionDate)}</td>
         <td>
           <div class="file-actions">
-            ${renderActionButtons(file)}
+            ${renderActionButtons(file, requestView)}
           </div>
         </td>
       `;
@@ -256,7 +265,7 @@ async function loadAdminFileList() {
       adminFileTableBody.appendChild(tr);
       tr.querySelector(".admin-file-checkbox").addEventListener("change", handleRowSelectionChange);
 
-      if (adminView === "active") {
+      if (requestView === "active") {
         tr.querySelector(".admin-row-delete").addEventListener("click", () => {
           showDeleteConfirm(file.fileId, file.fileName);
         });
@@ -273,12 +282,21 @@ async function loadAdminFileList() {
     updateBulkActionState();
     renderAdminPagination(total, page, pageSize, totalPages);
   } catch (err) {
+    if (!isLatestAdminListRequest(requestId, requestView, requestPage, requestPageSize, requestSearch)) return;
     adminFileListLoading.textContent = "加载失败，请刷新页面重试";
   }
 }
 
-function renderActionButtons(file) {
-  if (adminView === "recycle") {
+function isLatestAdminListRequest(requestId, requestView, requestPage, requestPageSize, requestSearch) {
+  return requestId === adminListRequestId
+    && requestView === adminView
+    && requestPage === adminCurrentPage
+    && requestPageSize === adminCurrentPageSize
+    && requestSearch === adminCurrentSearch;
+}
+
+function renderActionButtons(file, view = adminView) {
+  if (view === "recycle") {
     return `
       <button class="btn btn-copy-small admin-row-restore" type="button">恢复</button>
       <button class="btn btn-delete admin-row-purge" type="button">永久移除</button>
@@ -418,7 +436,7 @@ function configureActionModal(action, fileName, count) {
   deleteModalText.innerHTML = count === 1
     ? `确定要永久移除文件 <strong id="deleteFileName">${escapeHtml(fileName)}</strong> 吗？`
     : `确定要永久移除选中的 ${count} 个文件吗？`;
-  deleteModalWarning.textContent = "只会移除数据库 metadata，不会删除 GitHub 中的文件分片。此操作不可恢复。";
+  deleteModalWarning.textContent = "此操作不可撤销，移除后无法恢复。";
   confirmDeleteBtn.textContent = "永久移除";
 }
 
@@ -476,7 +494,7 @@ function getActionProgressText(action) {
 
 function getActionSuccessText(action, count) {
   if (action === "restore") return count === 1 ? "文件已恢复" : `${count} 个文件已恢复`;
-  if (action === "purge") return count === 1 ? "文件 metadata 已永久移除" : `${count} 个文件 metadata 已永久移除`;
+  if (action === "purge") return count === 1 ? "文件已永久移除" : `${count} 个文件已永久移除`;
   return count === 1 ? "文件已移入回收站" : `${count} 个文件已移入回收站`;
 }
 
