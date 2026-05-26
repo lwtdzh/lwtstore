@@ -5,6 +5,8 @@ const fs = require("fs");
 const crypto = require("crypto");
 
 const BASE_URL = "https://lwtstore.pages.dev";
+const GO_URL = `${BASE_URL}/go`;
+const ADMIN_URL = `${BASE_URL}/admin`;
 const ADMIN_PWD = "438700qwe";
 
 // ============================================================
@@ -73,8 +75,15 @@ async function purgeRecycledMetadata(request, fileId) {
 // Test Suite 1: Page Load & Basic UI
 // ============================================================
 test.describe("Page Load & Basic UI", () => {
-  test("should load the homepage with correct title and elements", async ({ page }) => {
+  test("should return an empty page at the root path", async ({ page }) => {
     await page.goto(BASE_URL);
+
+    const bodyHtml = await page.locator("body").innerHTML();
+    expect(bodyHtml.trim()).toBe("");
+  });
+
+  test("should load the main page at /go with correct title and elements", async ({ page }) => {
+    await page.goto(GO_URL);
 
     // Check page title
     await expect(page).toHaveTitle("Lwt's Store");
@@ -97,7 +106,7 @@ test.describe("Page Load & Basic UI", () => {
   });
 
   test("should show empty state or file table in file list", async ({ page }) => {
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
 
     // Wait for file list to load (loading indicator should disappear)
     await page.waitForFunction(() => {
@@ -225,7 +234,7 @@ test.describe("Small File Upload Flow", () => {
     expect(downloadRes.status()).toBe(200);
 
     // Verify UI file list section works (shows at least some files)
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     await page.waitForFunction(() => {
@@ -607,7 +616,7 @@ test.describe("Page Refresh & Persistence", () => {
   test("should persist file list after page refresh", async ({ page }) => {
     test.setTimeout(30000);
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     // Wait for file list to load
@@ -646,7 +655,7 @@ test.describe("Page Refresh & Persistence", () => {
   });
 
   test("should show download buttons for each file", async ({ page }) => {
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     await page.waitForFunction(() => {
@@ -696,7 +705,7 @@ test.describe("Embedded Browser Download Manager", () => {
   test("should download through the tray, cache chunks, and restore completed state after reload", async ({ page }) => {
     test.setTimeout(90000);
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForFunction(() => window.lwtDownloadManager);
 
     await page.fill("#searchInput", uploaded.fileName);
@@ -736,7 +745,7 @@ test.describe("Embedded Browser Download Manager", () => {
   });
 
   test("should keep tray open when clicking the download thread selector", async ({ page }) => {
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.evaluate(() => {
       localStorage.setItem("lwt_downloads", JSON.stringify([{
         type: "download",
@@ -805,7 +814,7 @@ test.describe("Embedded Browser Download Manager", () => {
       });
     });
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForFunction(() => window.lwtDownloadManager);
     await page.evaluate(({ fileId, fileName, fileSize }) => {
       window.lwtDownloadManager.startDownload({
@@ -855,7 +864,7 @@ test.describe("UI Upload with Refresh Resume Detection", () => {
   test("should detect resume state after setting localStorage and refreshing", async ({ page }) => {
     test.setTimeout(30000);
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     // Simulate a previous upload state in localStorage
@@ -1117,7 +1126,7 @@ test.describe("Search API", () => {
 // ============================================================
 test.describe("Pagination UI", () => {
   test("should show pagination controls on main page", async ({ page }) => {
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     await page.waitForFunction(() => {
@@ -1137,7 +1146,7 @@ test.describe("Pagination UI", () => {
   test("should filter file list when searching", async ({ page }) => {
     test.setTimeout(30000);
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     await page.waitForFunction(() => {
@@ -1165,7 +1174,7 @@ test.describe("Pagination UI", () => {
   test("should restore file list when clearing search", async ({ page }) => {
     test.setTimeout(30000);
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     await page.waitForFunction(() => {
@@ -1205,7 +1214,7 @@ test.describe("Pagination UI", () => {
 // ============================================================
 test.describe("Admin Page", () => {
   test("should load admin page with login form", async ({ page }) => {
-    await page.goto(`${BASE_URL}/admin.html`);
+    await page.goto(ADMIN_URL);
     await page.waitForLoadState("networkidle");
 
     // Check title
@@ -1221,7 +1230,7 @@ test.describe("Admin Page", () => {
   });
 
   test("should reject wrong password", async ({ page }) => {
-    await page.goto(`${BASE_URL}/admin.html`);
+    await page.goto(ADMIN_URL);
     await page.waitForLoadState("networkidle");
 
     const passwordInput = page.locator("#adminPassword");
@@ -1241,7 +1250,7 @@ test.describe("Admin Page", () => {
   });
 
   test("should have back to home link", async ({ page }) => {
-    await page.goto(`${BASE_URL}/admin.html`);
+    await page.goto(ADMIN_URL);
     await page.waitForLoadState("networkidle");
 
     const backLink = page.locator("a.admin-link");
@@ -1249,11 +1258,11 @@ test.describe("Admin Page", () => {
     await expect(backLink).toContainText("返回首页");
 
     const href = await backLink.getAttribute("href");
-    expect(href).toBe("/");
+    expect(href).toBe("/go");
   });
 
   test("should have admin link in main page footer", async ({ page }) => {
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
     await page.waitForLoadState("networkidle");
 
     const adminLink = page.locator("footer a.admin-link");
@@ -1261,7 +1270,7 @@ test.describe("Admin Page", () => {
     await expect(adminLink).toContainText("管理");
 
     const href = await adminLink.getAttribute("href");
-    expect(href).toBe("/admin.html");
+    expect(href).toBe("/admin");
   });
 });
 
@@ -1376,7 +1385,7 @@ test.describe("Admin Recycle Bin & Bulk Delete", () => {
   });
 
   test("should expose admin selection controls and recycle-bin actions", async ({ page }) => {
-    await page.goto(`${BASE_URL}/admin.html`);
+    await page.goto(ADMIN_URL);
     await page.fill("#adminPassword", ADMIN_PWD);
     await page.click("#loginBtn");
 
@@ -1497,7 +1506,7 @@ test.describe("Upload Speed Indicator", () => {
   let testFileId;
 
   test("should have speed and ETA elements in the upload progress UI", async ({ page }) => {
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
 
     // Verify the speed and ETA elements exist in the DOM
     const speedEl = page.locator("#uploadSpeed");
@@ -1509,7 +1518,7 @@ test.describe("Upload Speed Indicator", () => {
   test("should display speed during file upload and clear on completion", async ({ page }) => {
     test.setTimeout(120000);
 
-    await page.goto(BASE_URL);
+    await page.goto(GO_URL);
 
     // Create a 5MB test file (one full part — takes a few seconds to upload, enough to show speed)
     const tmpFile = path.join(require("os").tmpdir(), `speed-test-${Date.now()}.bin`);
