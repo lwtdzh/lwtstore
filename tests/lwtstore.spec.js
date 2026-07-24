@@ -5,7 +5,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 
 const BASE_URL = "https://lwtstore.pages.dev";
-const GO_URL = `${BASE_URL}/go`;
+const GO_URL = BASE_URL;
 const ADMIN_URL = `${BASE_URL}/admin`;
 const ADMIN_PWD = "438700qwe";
 
@@ -75,14 +75,14 @@ async function purgeRecycledMetadata(request, fileId) {
 // Test Suite 1: Page Load & Basic UI
 // ============================================================
 test.describe("Page Load & Basic UI", () => {
-  test("should return an empty page at the root path", async ({ page }) => {
+  test("should serve the main page at the root path", async ({ page }) => {
     await page.goto(BASE_URL);
 
-    const bodyHtml = await page.locator("body").innerHTML();
-    expect(bodyHtml.trim()).toBe("");
+    await expect(page).toHaveTitle("Lwt's Store");
+    await expect(page.locator("#uploadArea")).toBeVisible();
   });
 
-  test("should load the main page at /go with correct title and elements", async ({ page }) => {
+  test("should load the main page at the root with correct title and elements", async ({ page }) => {
     await page.goto(GO_URL);
 
     // Check page title
@@ -1258,7 +1258,7 @@ test.describe("Admin Page", () => {
     await expect(backLink).toContainText("返回首页");
 
     const href = await backLink.getAttribute("href");
-    expect(href).toBe("/go");
+    expect(href).toBe("/");
   });
 
   test("should have admin link in main page footer", async ({ page }) => {
